@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDown,
   ArrowRight,
@@ -10,6 +10,7 @@ import {
 import { CategoryFilter } from './components/CategoryFilter'
 import { EventCard } from './components/EventCard'
 import { UpcomingEventRow } from './components/UpcomingEventRow'
+import { getHealth } from './lib/api'
 import { events } from './data/events'
 import type { EventCategory } from './types/event'
 import './App.css'
@@ -17,6 +18,28 @@ import './App.css'
 function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<EventCategory | 'All'>('All')
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+
+    let cancelled = false
+    void getHealth()
+      .then(() => {
+        if (cancelled) return
+        console.info('CampusConnect API connectivity check passed')
+      })
+      .catch(() => {
+        if (!cancelled) {
+          console.warn(
+            'CampusConnect API health check failed. Check that the backend is running and VITE_API_URL is configured.',
+          )
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const filteredEvents = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase()
