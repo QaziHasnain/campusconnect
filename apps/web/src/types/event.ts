@@ -13,8 +13,9 @@ export interface CampusEvent {
   date: string
   venue: string
   category: EventCategory
-  price: number
+  price?: number
   description: string
-  featured: boolean
+  featured?: boolean
   artwork: EventArtwork
+  organizerName?: string
 }

@@ -66,6 +66,57 @@ export const healthResponseSchema = z.object({
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>
 
+export const apiEventCategorySchema = z.enum([
+  'TECHNOLOGY',
+  'CULTURAL',
+  'SPORTS',
+  'WORKSHOPS',
+  'HACKATHONS',
+])
+
+export const apiEventSchema = z.object({
+  id: z.string().min(1),
+  title: z.string(),
+  description: z.string(),
+  category: apiEventCategorySchema,
+  venue: z.string(),
+  startAt: z.iso.datetime(),
+  endAt: z.iso.datetime().nullable(),
+  status: z.enum(['DRAFT', 'PUBLISHED']),
+  capacity: z.number().int().positive().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+  organizer: z.object({ name: z.string() }),
+})
+
+export const eventListResponseSchema = z.object({
+  events: z.array(apiEventSchema),
+})
+
+export type ApiEvent = z.infer<typeof apiEventSchema>
+export type ApiEventCategory = z.infer<typeof apiEventCategorySchema>
+
+export const authUserSchema = z.object({
+  id: z.string().min(1),
+  name: z.string(),
+  email: z.email(),
+  role: z.enum(['STUDENT', 'ORGANIZER']),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+})
+
+export const authUserResponseSchema = z.object({
+  user: authUserSchema,
+})
+
+export const currentUserResponseSchema = authUserResponseSchema
+
+export const logoutResponseSchema = z.object({
+  message: z.literal('Logged out'),
+})
+
+export type AuthUser = z.infer<typeof authUserSchema>
+
 export function getHealth(): Promise<HealthResponse> {
   return apiRequest('/api/health', healthResponseSchema)
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   ArrowDown,
   ArrowRight,
@@ -7,17 +7,68 @@ import {
   Search,
   Sparkles,
 } from 'lucide-react'
+import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom'
+import { AuthProvider } from './auth/AuthContext'
+import { useAuth } from './auth/useAuth'
+import { LoginPage, RegistrationPage } from './auth/AuthPages'
 import { CategoryFilter } from './components/CategoryFilter'
 import { EventCard } from './components/EventCard'
 import { UpcomingEventRow } from './components/UpcomingEventRow'
-import { getHealth } from './lib/api'
-import { events } from './data/events'
+import { ApiError, apiRequest, eventListResponseSchema, getHealth } from './lib/api'
+import { formatEventDateTime } from './lib/eventFormatting'
+import { toApiCategory, toCampusEvent } from './lib/events'
+import type { CampusEvent } from './types/event'
 import type { EventCategory } from './types/event'
 import './App.css'
 
-function App() {
+function LandingPage() {
+  const { user, initializationError, logout } = useAuth()
+  const [events, setEvents] = useState<CampusEvent[]>([])
+  const [isLoadingEvents, setIsLoadingEvents] = useState(true)
+  const [eventsError, setEventsError] = useState<string | null>(null)
+  const [retryEvents, setRetryEvents] = useState(0)
   const [searchQuery, setSearchQuery] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<EventCategory | 'All'>('All')
+  const [logoutError, setLogoutError] = useState<string | null>(null)
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300)
+    return () => window.clearTimeout(timer)
+  }, [searchQuery])
+
+  useEffect(() => {
+    let cancelled = false
+    const query = new URLSearchParams()
+    if (selectedCategory !== 'All') query.set('category', toApiCategory(selectedCategory))
+    if (debouncedSearch) query.set('search', debouncedSearch)
+    const suffix = query.size > 0 ? `?${query.toString()}` : ''
+
+    void apiRequest(`/api/events${suffix}`, eventListResponseSchema)
+      .then(({ events: apiEvents }) => {
+        if (!cancelled) {
+          setEvents(apiEvents.map(toCampusEvent))
+          setEventsError(null)
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setEvents([])
+        setEventsError(
+          error instanceof ApiError && error.status >= 500
+            ? 'The events service is temporarily unavailable.'
+            : 'We could not load events. Check your connection and try again.',
+        )
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingEvents(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [debouncedSearch, retryEvents, selectedCategory])
 
   useEffect(() => {
     if (!import.meta.env.DEV) return
@@ -41,29 +92,51 @@ function App() {
     }
   }, [])
 
-  const filteredEvents = useMemo(() => {
-    const query = searchQuery.trim().toLocaleLowerCase()
-
-    return events.filter((event) => {
-      const matchesCategory =
-        selectedCategory === 'All' || event.category === selectedCategory
-      const matchesSearch =
-        query.length === 0 ||
-        `${event.title} ${event.category} ${event.venue}`
-          .toLocaleLowerCase()
-          .includes(query)
-
-      return matchesCategory && matchesSearch
-    })
-  }, [searchQuery, selectedCategory])
-
-  const featuredEvents = filteredEvents.filter((event) => event.featured)
-  const upcomingEvents = filteredEvents
-    .filter((event) => !event.featured)
-    .sort((first, second) => first.date.localeCompare(second.date))
+  const featuredEvents = events.slice(0, 5)
+  const upcomingEvents = events.slice(5)
+  const spotlightEvent = events[0]
 
   function exploreEvents() {
     document.getElementById('events')?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  function handleSearchChange(value: string) {
+    if (value.trim() !== debouncedSearch) {
+      setIsLoadingEvents(true)
+      setEventsError(null)
+    } else {
+      setIsLoadingEvents(false)
+    }
+    setSearchQuery(value)
+  }
+
+  function handleCategoryChange(category: EventCategory | 'All') {
+    if (category === selectedCategory) return
+    setSelectedCategory(category)
+    setIsLoadingEvents(true)
+    setEventsError(null)
+  }
+
+  function retryEventLoad() {
+    setIsLoadingEvents(true)
+    setEventsError(null)
+    setRetryEvents((attempt) => attempt + 1)
+  }
+
+  async function handleLogout() {
+    setLogoutError(null)
+    setIsLoggingOut(true)
+    try {
+      await logout()
+    } catch (error) {
+      setLogoutError(
+        error instanceof ApiError && error.status >= 500
+          ? 'The service is temporarily unavailable. Please try again.'
+          : 'Unable to sign out. Please check your connection and try again.',
+      )
+    } finally {
+      setIsLoggingOut(false)
+    }
   }
 
   return (
@@ -78,14 +151,37 @@ function App() {
         <nav className="main-nav" aria-label="Main navigation">
           <a href="#events">Events</a>
           <a href="#about">About</a>
-          <a href="#login">Login</a>
+          {user ? (
+            <span className="signed-in-label">
+              Hi, {user.name} · {user.role === 'ORGANIZER' ? 'Organizer' : 'Student'}
+            </span>
+          ) : (
+            <Link to="/login">Login</Link>
+          )}
         </nav>
-        <a className="button button-primary header-cta" href="#events">
-          Get Started <ArrowRight size={16} aria-hidden="true" />
-        </a>
+        {user ? (
+          <button
+            className="button button-primary header-cta"
+            type="button"
+            onClick={() => void handleLogout()}
+            disabled={isLoggingOut}
+          >
+            {isLoggingOut ? 'Signing out…' : 'Log out'}
+          </button>
+        ) : (
+          <Link className="button button-primary header-cta" to="/register">
+            Get Started <ArrowRight size={16} aria-hidden="true" />
+          </Link>
+        )}
       </header>
 
       <main>
+        {initializationError && (
+          <p className="session-notice" role="alert">{initializationError}</p>
+        )}
+        {logoutError && (
+          <p className="session-notice" role="alert">{logoutError}</p>
+        )}
         <section className="hero-section" aria-labelledby="hero-title">
           <div className="hero-copy">
             <span className="eyebrow">
@@ -113,14 +209,15 @@ function App() {
             >
               <Search size={19} aria-hidden="true" />
               <label className="sr-only" htmlFor="hero-event-search">
-                Search events by name, category, or venue
+                Search events by name, description, or venue
               </label>
               <input
                 id="hero-event-search"
                 type="search"
                 placeholder="Try “design”, “sports” or a venue"
+                maxLength={200}
                 value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
+                onChange={(event) => handleSearchChange(event.target.value)}
               />
               <button className="button button-primary search-button" type="submit">
                 Explore Events
@@ -147,25 +244,35 @@ function App() {
             </div>
             <article className="spotlight-card">
               <div className="spotlight-art">
-                <span className="spotlight-tag">UP NEXT ON CAMPUS</span>
+                <span className="spotlight-tag">
+                  {spotlightEvent ? 'UP NEXT ON CAMPUS' : 'CAMPUS EVENTS'}
+                </span>
                 <div className="spotlight-sun" />
                 <div className="spotlight-orb spotlight-orb-one" />
                 <div className="spotlight-orb spotlight-orb-two" />
-                <span className="spotlight-art-caption">Ideas take shape here.</span>
+                <span className="spotlight-art-caption">
+                  {spotlightEvent ? 'Ideas take shape here.' : 'Find your next campus moment.'}
+                </span>
               </div>
               <div className="spotlight-info">
                 <div className="spotlight-date">
                   <CalendarDays size={15} aria-hidden="true" />
-                  SAT, NOV 07 · 10:00 AM
+                  {spotlightEvent
+                    ? formatEventDateTime(spotlightEvent.date)
+                    : 'NEW EVENTS COMING SOON'}
                 </div>
-                <h2>Campus AI Summit</h2>
+                <h2>{spotlightEvent?.title ?? 'Discover campus events'}</h2>
                 <span className="spotlight-venue">
                   <MapPin size={14} aria-hidden="true" />
-                  Innovation Hall
+                  {spotlightEvent?.venue ?? 'Find something happening near you'}
                 </span>
                 <div className="spotlight-bottom">
-                  <span className="spotlight-category">Technology</span>
-                  <span className="spotlight-price">$12 <small>/ ticket</small></span>
+                  <span className="spotlight-category">
+                    {spotlightEvent?.category ?? 'Explore'}
+                  </span>
+                  {spotlightEvent && (
+                    <span className="spotlight-organizer">{spotlightEvent.organizerName}</span>
+                  )}
                 </div>
               </div>
             </article>
@@ -180,7 +287,12 @@ function App() {
           </a>
         </section>
 
-        <section className="events-section section-wrap" id="events" aria-labelledby="events-title">
+        <section
+          className="events-section section-wrap"
+          id="events"
+          aria-labelledby="events-title"
+          aria-busy={isLoadingEvents}
+        >
           <div className="section-heading">
             <div>
               <span className="eyebrow section-eyebrow">GOOD THINGS ARE HAPPENING</span>
@@ -188,7 +300,9 @@ function App() {
               <p>Big ideas, new friends, and memories you didn’t plan on making.</p>
             </div>
             <div className="section-count" aria-live="polite">
-              <strong>{filteredEvents.length.toString().padStart(2, '0')}</strong>
+              <strong>
+                {isLoadingEvents ? '—' : events.length.toString().padStart(2, '0')}
+              </strong>
               <span>events<br />to explore</span>
             </div>
           </div>
@@ -196,44 +310,65 @@ function App() {
           <div className="event-controls">
             <CategoryFilter
               selectedCategory={selectedCategory}
-              onSelectCategory={setSelectedCategory}
+              onSelectCategory={handleCategoryChange}
             />
             <label className="section-search">
               <Search size={17} aria-hidden="true" />
-              <span className="sr-only">Search events by name, category, or venue</span>
+              <span className="sr-only">Search events by name, description, or venue</span>
               <input
                 type="search"
                 placeholder="Search events..."
+                maxLength={200}
                 value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
+                onChange={(event) => handleSearchChange(event.target.value)}
               />
             </label>
           </div>
 
-          {featuredEvents.length > 0 && (
-            <div className="featured-grid">
-              {featuredEvents.map((event) => (
-                <EventCard event={event} key={event.id} />
-              ))}
+          {isLoadingEvents ? (
+            <div className="empty-state" role="status" aria-live="polite">
+              <p>Loading campus events…</p>
             </div>
-          )}
-
-          {filteredEvents.length === 0 && (
-            <div className="empty-state" role="status">
-              <Search size={23} aria-hidden="true" />
-              <h3>No events found just yet.</h3>
-              <p>Try another search or choose a different category.</p>
+          ) : eventsError ? (
+            <div className="empty-state" role="alert">
+              <h3>Events unavailable</h3>
+              <p>{eventsError}</p>
               <button
                 className="text-button"
                 type="button"
-                onClick={() => {
-                  setSearchQuery('')
-                  setSelectedCategory('All')
-                }}
+                onClick={retryEventLoad}
               >
-                Clear filters <ArrowRight size={15} aria-hidden="true" />
+                Try again <ArrowRight size={15} aria-hidden="true" />
               </button>
             </div>
+          ) : (
+            <>
+              {featuredEvents.length > 0 && (
+                <div className="featured-grid">
+                  {featuredEvents.map((event) => (
+                    <EventCard event={event} key={event.id} />
+                  ))}
+                </div>
+              )}
+
+              {events.length === 0 && (
+                <div className="empty-state" role="status">
+                  <Search size={23} aria-hidden="true" />
+                  <h3>No events found just yet.</h3>
+                  <p>Try another search or choose a different category.</p>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => {
+                      handleSearchChange('')
+                      handleCategoryChange('All')
+                    }}
+                  >
+                    Clear filters <ArrowRight size={15} aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </section>
 
@@ -285,15 +420,41 @@ function App() {
           <nav className="footer-links" aria-label="Footer navigation">
             <a href="#events">Explore events</a>
             <a href="#about">About us</a>
-            <a href="#login" id="login">Login</a>
+            {user ? (
+              <button
+                className="footer-logout"
+                type="button"
+                onClick={() => void handleLogout()}
+                disabled={isLoggingOut}
+              >
+                Log out
+              </button>
+            ) : (
+              <Link to="/login">Login</Link>
+            )}
           </nav>
         </div>
         <div className="footer-bottom">
           <span>© 2026 CampusConnect. Made for campus life.</span>
-          <span>Login access is coming soon.</span>
+          <span>Find your community on campus.</span>
         </div>
       </footer>
     </div>
+  )
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegistrationPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   )
 }
 

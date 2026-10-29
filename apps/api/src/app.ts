@@ -4,6 +4,11 @@ import express from "express";
 import session, { type Store } from "express-session";
 import helmet from "helmet";
 import { createAuthRouter, type AuthRepository } from "./auth.js";
+import {
+  createEventRouter,
+  createPrismaEventRepository,
+  type EventRepository,
+} from "./events.js";
 import { env } from "./env.js";
 import { pool } from "./db.js";
 import { prisma } from "./prisma.js";
@@ -48,7 +53,11 @@ const authRepository: AuthRepository = {
   create: (data) => prisma.user.create({ data, select: publicUserFields }),
 };
 
-export function createApp(options: { authRepository?: AuthRepository; sessionStore?: Store } = {}) {
+export function createApp(options: {
+  authRepository?: AuthRepository;
+  eventRepository?: EventRepository;
+  sessionStore?: Store;
+} = {}) {
   const app = express();
   const sessionStore =
     options.sessionStore ??
@@ -87,6 +96,10 @@ export function createApp(options: { authRepository?: AuthRepository; sessionSto
     }),
   );
   app.use("/api/auth", createAuthRouter(options.authRepository ?? authRepository));
+  app.use(
+    "/api/events",
+    createEventRouter(options.eventRepository ?? createPrismaEventRepository(prisma)),
+  );
   app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
     if (response.headersSent) {
       return next(error);
