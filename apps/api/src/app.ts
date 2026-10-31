@@ -125,7 +125,7 @@ export function createApp(options: {
       store: sessionStore,
       cookie: {
         httpOnly: true,
-        sameSite: "lax",
+        sameSite: env.nodeEnv === "production" ? "none" : "lax",
         secure: env.nodeEnv === "production",
         maxAge: 24 * 60 * 60 * 1000,
       },
