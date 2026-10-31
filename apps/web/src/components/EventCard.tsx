@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import {
   Code2,
   Cpu,
@@ -8,6 +9,7 @@ import {
 } from 'lucide-react'
 import type { CampusEvent, EventCategory } from '../types/event'
 import { formatEventDate, formatEventShortDate } from '../lib/eventFormatting'
+import { EventRegistrationControl } from './EventRegistrationControl'
 
 const categoryIcons: Record<EventCategory, LucideIcon> = {
   Technology: Cpu,
@@ -19,9 +21,15 @@ const categoryIcons: Record<EventCategory, LucideIcon> = {
 
 interface EventCardProps {
   event: CampusEvent
+  showRegistrationControl?: boolean
+  registrationControl?: ReactNode
 }
 
-export function EventCard({ event }: EventCardProps) {
+export function EventCard({
+  event,
+  showRegistrationControl = true,
+  registrationControl,
+}: EventCardProps) {
   const CategoryIcon = categoryIcons[event.category]
 
   return (
@@ -53,6 +61,11 @@ export function EventCard({ event }: EventCardProps) {
             </span>
           )}
         </div>
+        {registrationControl ? (
+          <div className="event-registration-control">{registrationControl}</div>
+        ) : showRegistrationControl ? (
+          <EventRegistrationControl eventId={event.id} eventTitle={event.title} />
+        ) : null}
       </div>
     </article>
   )

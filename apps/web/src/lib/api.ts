@@ -18,6 +18,10 @@ export class ApiError extends Error {
   }
 }
 
+const apiErrorResponseSchema = z.object({
+  error: z.string(),
+})
+
 export async function apiRequest<T>(
   path: string,
   schema: z.ZodType<T>,
@@ -38,7 +42,17 @@ export async function apiRequest<T>(
   })
 
   if (!response.ok) {
-    throw new ApiError(response.status)
+    let message: string | undefined
+    try {
+      const parsedError = apiErrorResponseSchema.safeParse(
+        JSON.parse(await response.text()),
+      )
+      if (parsedError.success) message = parsedError.data.error
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error
+    }
+
+    throw new ApiError(response.status, message)
   }
 
   let data: unknown
@@ -96,6 +110,18 @@ export const eventListResponseSchema = z.object({
 export type ApiEvent = z.infer<typeof apiEventSchema>
 export type ApiEventCategory = z.infer<typeof apiEventCategorySchema>
 
+export const registrationResponseSchema = z.object({
+  registration: z.object({
+    id: z.string().min(1),
+    eventId: z.string().min(1),
+    createdAt: z.iso.datetime(),
+  }),
+})
+
+export const eventRegistrationStatusResponseSchema = z.object({
+  registered: z.boolean(),
+})
+
 export const authUserSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
@@ -116,6 +142,21 @@ export const logoutResponseSchema = z.object({
 })
 
 export type AuthUser = z.infer<typeof authUserSchema>
+
+export function getEventRegistrationStatus(eventId: string) {
+  return apiRequest(
+    `/api/events/${encodeURIComponent(eventId)}/registration`,
+    eventRegistrationStatusResponseSchema,
+  )
+}
+
+export function registerForEvent(eventId: string) {
+  return apiRequest(
+    `/api/events/${encodeURIComponent(eventId)}/register`,
+    registrationResponseSchema,
+    { method: 'POST', body: JSON.stringify({}) },
+  )
+}
 
 export function getHealth(): Promise<HealthResponse> {
   return apiRequest('/api/health', healthResponseSchema)

@@ -574,6 +574,44 @@
   line-height: 1.7;
 }
 
+.registrations-description {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.registrations-section {
+  min-height: 500px;
+  padding-top: 76px;
+  padding-bottom: 83px;
+}
+
+.registrations-section > h1 {
+  margin: 10px 0 8px;
+  color: var(--navy);
+  font-size: clamp(28px, 3vw, 36px);
+  font-weight: 720;
+  letter-spacing: -1.2px;
+}
+
+.registrations-section > .empty-state {
+  margin-top: 30px;
+  gap: 6px;
+  padding: 24px;
+}
+
+.registrations-section > .empty-state h2 {
+  margin: 0;
+}
+
+.registrations-section > .empty-state .button {
+  margin-top: 10px;
+}
+
+.registrations-section > .empty-state .text-button {
+  margin-top: 10px;
+}
+
 .section-count {
   display: flex;
   align-items: center;
@@ -824,6 +862,68 @@
   white-space: nowrap;
 }
 
+.event-registration-control {
+  margin-top: 13px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.event-registration-control--compact {
+  max-width: 160px;
+  margin-top: 0;
+  gap: 5px;
+}
+
+.registration-button {
+  min-height: 34px;
+  padding-inline: 12px;
+  border: 1px solid #e6e2f5;
+  color: var(--violet);
+  background: #f7f5ff;
+  font-size: 10px;
+  box-shadow: none;
+}
+
+.registration-button:hover:not(:disabled) {
+  background: #efebff;
+}
+
+.registration-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.registration-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: #28714d;
+  background: #eaf6ef;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.registration-message {
+  flex-basis: 100%;
+  color: #845b1b;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.event-registration-control--compact .registration-message {
+  max-width: 160px;
+}
+
+.registration-sign-in {
+  color: var(--violet);
+  font-size: 10px;
+  font-weight: 650;
+}
+
 .empty-state {
   min-height: 235px;
   display: flex;
@@ -886,7 +986,7 @@
 .upcoming-row {
   min-height: 89px;
   display: grid;
-  grid-template-columns: 35px 57px minmax(180px, 1fr) minmax(130px, 190px) minmax(100px, 140px) 20px;
+  grid-template-columns: 35px 57px minmax(180px, 1fr) minmax(130px, 190px) minmax(100px, 140px) minmax(110px, max-content);
   align-items: center;
   gap: 19px;
   border-bottom: 1px solid #e9e9f0;
@@ -1108,7 +1208,7 @@
   }
 
   .upcoming-row {
-    grid-template-columns: 25px 52px minmax(150px, 1fr) minmax(110px, 150px) minmax(90px, 120px) 18px;
+    grid-template-columns: 25px 52px minmax(150px, 1fr) minmax(110px, 150px) minmax(90px, 120px) minmax(100px, max-content);
     gap: 13px;
   }
 }
@@ -1126,7 +1226,7 @@
     order: 3;
     width: 100%;
     justify-content: center;
-    gap: clamp(24px, 9vw, 52px);
+    gap: clamp(10px, 3vw, 22px);
     padding-top: 10px;
     border-top: 1px solid var(--line);
   }
@@ -1205,8 +1305,14 @@
     padding: 57px 0 59px;
   }
 
+  .registrations-section {
+    min-height: 420px;
+    padding-top: 58px;
+    padding-bottom: 60px;
+  }
+
   .upcoming-row {
-    grid-template-columns: 44px minmax(0, 1fr) 18px;
+    grid-template-columns: 44px minmax(0, 1fr) minmax(80px, max-content);
     gap: 12px;
     padding: 13px 0;
   }
@@ -1379,7 +1485,7 @@
   }
 
   .upcoming-row {
-    grid-template-columns: 42px minmax(0, 1fr) 15px;
+    grid-template-columns: 42px minmax(0, 1fr) minmax(80px, max-content);
     gap: 9px;
   }
 

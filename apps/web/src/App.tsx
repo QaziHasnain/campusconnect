@@ -19,6 +19,7 @@ import { formatEventDateTime } from './lib/eventFormatting'
 import { toApiCategory, toCampusEvent } from './lib/events'
 import type { CampusEvent } from './types/event'
 import type { EventCategory } from './types/event'
+import { MyRegistrationsPage } from './pages/MyRegistrationsPage'
 import './App.css'
 
 function LandingPage() {
@@ -151,6 +152,7 @@ function LandingPage() {
         <nav className="main-nav" aria-label="Main navigation">
           <a href="#events">Events</a>
           <a href="#about">About</a>
+          {user?.role === 'STUDENT' && <Link to="/registrations">My registrations</Link>}
           {user ? (
             <span className="signed-in-label">
               Hi, {user.name} · {user.role === 'ORGANIZER' ? 'Organizer' : 'Student'}
@@ -420,6 +422,7 @@ function LandingPage() {
           <nav className="footer-links" aria-label="Footer navigation">
             <a href="#events">Explore events</a>
             <a href="#about">About us</a>
+            {user?.role === 'STUDENT' && <Link to="/registrations">My registrations</Link>}
             {user ? (
               <button
                 className="footer-logout"
@@ -449,6 +452,7 @@ function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<LandingPage />} />
+          <Route path="/registrations" element={<MyRegistrationsPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegistrationPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

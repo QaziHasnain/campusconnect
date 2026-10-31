@@ -8,6 +8,8 @@ import type {
   EventRecord,
   EventRepository,
   EventUpdateData,
+  RegistrationRecord,
+  RegistrationResult,
 } from "./events.js";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -18,12 +20,16 @@ process.env.FRONTEND_ORIGIN = "http://localhost:5173";
 
 const users = new Map<string, User>();
 const events = new Map<string, EventRecord>();
+const registrations = new Map<string, RegistrationRecord>();
 let app: import("express").Express;
 let organizer: ReturnType<typeof request.agent>;
 let otherOrganizer: ReturnType<typeof request.agent>;
 let student: ReturnType<typeof request.agent>;
+let otherStudent: ReturnType<typeof request.agent>;
 let organizerId: string;
 let otherOrganizerId: string;
+let studentId: string;
+let otherStudentId: string;
 
 const authRepository: AuthRepository = {
   async findByEmail(email) {
@@ -69,6 +75,33 @@ const eventRepository: EventRepository = {
   },
   async findUserRole(userId) {
     return users.get(userId)?.role ?? null;
+  },
+  async registerForEvent(eventId, userId): Promise<RegistrationResult> {
+    const event = events.get(eventId);
+    if (!event || event.status !== EventStatus.PUBLISHED) return { status: "not_found" };
+
+    const registrationKey = `${userId}:${eventId}`;
+    if (registrations.has(registrationKey)) return { status: "duplicate" };
+
+    const registrationCount = [...registrations.values()].filter(
+      (registration) => registration.eventId === eventId,
+    ).length;
+    if (event.capacity !== null && registrationCount >= event.capacity) {
+      return { status: "capacity_reached" };
+    }
+
+    const registration: RegistrationRecord = {
+      id: `registration-${registrations.size + 1}`,
+      userId,
+      eventId,
+      createdAt: new Date(),
+    };
+    registrations.set(registrationKey, registration);
+    return { status: "created", registration };
+  },
+  async findRegistrationStatus(eventId, userId) {
+    if (!events.has(eventId)) return null;
+    return registrations.has(`${userId}:${eventId}`);
   },
   async create(data: EventCreateData) {
     const id = `event-${events.size + 1}`;
@@ -123,15 +156,25 @@ beforeAll(async () => {
   const organizerAccount = await register("Event Organizer", "ORGANIZER");
   const otherOrganizerAccount = await register("Other Organizer", "ORGANIZER");
   const studentAccount = await register("Campus Student", "STUDENT");
+  const otherStudentAccount = await register("Another Student", "STUDENT");
   organizer = organizerAccount.agent;
   organizerId = organizerAccount.id;
   otherOrganizer = otherOrganizerAccount.agent;
   otherOrganizerId = otherOrganizerAccount.id;
   student = studentAccount.agent;
+  studentId = studentAccount.id;
+  otherStudent = otherStudentAccount.agent;
+  otherStudentId = otherStudentAccount.id;
 });
 
-beforeEach(() => events.clear());
-afterEach(() => events.clear());
+beforeEach(() => {
+  events.clear();
+  registrations.clear();
+});
+afterEach(() => {
+  events.clear();
+  registrations.clear();
+});
 
 function seedEvent({
   id,
@@ -140,6 +183,7 @@ function seedEvent({
   startAt = new Date("2026-11-10T10:00:00.000Z"),
   category = EventCategory.TECHNOLOGY,
   title = "Campus Technology Talk",
+  capacity = null,
 }: {
   id: string;
   ownerId?: string;
@@ -147,6 +191,7 @@ function seedEvent({
   startAt?: Date;
   category?: EventCategory;
   title?: string;
+  capacity?: number | null;
 }) {
   const owner = users.get(ownerId);
   if (!owner) throw new Error("Missing test event owner");
@@ -160,7 +205,7 @@ function seedEvent({
     endAt: null,
     organizerId: ownerId,
     status,
-    capacity: null,
+    capacity,
     createdAt: new Date("2026-10-01T00:00:00.000Z"),
     updatedAt: new Date("2026-10-01T00:00:00.000Z"),
     organizer: { name: owner.name },
@@ -307,5 +352,74 @@ describe("Event API", () => {
       404,
     );
     expect((await organizer.delete("/api/events/missing")).status).toBe(404);
+  });
+
+  it("requires an authenticated student to register and check registration status", async () => {
+    seedEvent({ id: "registration-auth" });
+
+    expect((await request(app).post("/api/events/registration-auth/register")).status).toBe(401);
+    expect((await request(app).get("/api/events/registration-auth/registration")).status).toBe(401);
+    expect((await organizer.post("/api/events/registration-auth/register")).status).toBe(403);
+    expect((await organizer.get("/api/events/registration-auth/registration")).status).toBe(403);
+  });
+
+  it("rejects registrations for unpublished or missing events", async () => {
+    seedEvent({ id: "registration-draft", status: EventStatus.DRAFT });
+
+    expect((await student.post("/api/events/registration-draft/register")).status).toBe(404);
+    expect((await student.post("/api/events/registration-missing/register")).status).toBe(404);
+    expect((await student.get("/api/events/registration-missing/registration")).status).toBe(404);
+  });
+
+  it("creates a registration for the session student and prevents duplicates", async () => {
+    seedEvent({ id: "registration-success" });
+
+    const response = await student
+      .post("/api/events/registration-success/register")
+      .send({ userId: otherStudentId });
+
+    expect(response.status).toBe(400);
+
+    const registration = await student.post("/api/events/registration-success/register");
+    expect(registration.status).toBe(201);
+    expect(registration.body.registration).toMatchObject({
+      id: "registration-1",
+      eventId: "registration-success",
+    });
+    expect(registration.body.registration).not.toHaveProperty("userId");
+    expect(registrations.get(`${studentId}:registration-success`)?.userId).toBe(studentId);
+    expect(registrations.has(`${otherStudentId}:registration-success`)).toBe(false);
+    expect((await student.post("/api/events/registration-success/register")).status).toBe(409);
+  });
+
+  it("prevents registrations once event capacity is reached", async () => {
+    seedEvent({ id: "registration-full", capacity: 1 });
+    expect((await student.post("/api/events/registration-full/register")).status).toBe(201);
+
+    const response = await otherStudent.post("/api/events/registration-full/register");
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({ error: "Event is full" });
+    expect(
+      [...registrations.values()].filter((item) => item.eventId === "registration-full"),
+    ).toHaveLength(1);
+  });
+
+  it("returns only the current student's registration status", async () => {
+    seedEvent({ id: "registration-private" });
+    await student.post("/api/events/registration-private/register");
+
+    const registeredStudentStatus = await student.get(
+      "/api/events/registration-private/registration",
+    );
+    expect(registeredStudentStatus.status).toBe(200);
+    expect(registeredStudentStatus.body).toEqual({ registered: true });
+
+    const otherStudentStatus = await otherStudent.get(
+      "/api/events/registration-private/registration",
+    );
+    expect(otherStudentStatus.status).toBe(200);
+    expect(otherStudentStatus.body).toEqual({ registered: false });
+    expect(JSON.stringify(otherStudentStatus.body)).not.toContain("userId");
+    expect(JSON.stringify(otherStudentStatus.body)).not.toContain("registration-");
   });
 });

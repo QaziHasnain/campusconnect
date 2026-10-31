@@ -1,6 +1,7 @@
-import { ArrowUpRight, MapPin } from 'lucide-react'
+import { MapPin } from 'lucide-react'
 import type { CampusEvent } from '../types/event'
 import { formatEventDay, formatEventMonth } from '../lib/eventFormatting'
+import { EventRegistrationControl } from './EventRegistrationControl'
 
 interface UpcomingEventRowProps {
   event: CampusEvent
@@ -25,7 +26,7 @@ export function UpcomingEventRow({ event, index }: UpcomingEventRowProps) {
         {event.venue}
       </span>
       <span className="upcoming-organizer">{event.organizerName}</span>
-      <ArrowUpRight className="upcoming-arrow" size={19} aria-hidden="true" />
+      <EventRegistrationControl eventId={event.id} eventTitle={event.title} compact />
     </article>
   )
 }
