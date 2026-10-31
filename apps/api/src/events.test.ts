@@ -10,6 +10,7 @@ import type {
   EventUpdateData,
   RegistrationRecord,
   RegistrationResult,
+  RegistrationWithEventRecord,
 } from "./events.js";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -51,6 +52,10 @@ const authRepository: AuthRepository = {
     users.set(user.id, user);
     const { passwordHash: _passwordHash, ...safeUser } = user;
     return safeUser;
+  },
+  async storePasswordResetToken() {},
+  async resetPassword() {
+    return false;
   },
 };
 
@@ -102,6 +107,15 @@ const eventRepository: EventRepository = {
   async findRegistrationStatus(eventId, userId) {
     if (!events.has(eventId)) return null;
     return registrations.has(`${userId}:${eventId}`);
+  },
+  async listUserRegistrations(userId): Promise<RegistrationWithEventRecord[]> {
+    return [...registrations.values()]
+      .filter((registration) => registration.userId === userId)
+      .flatMap((registration) => {
+        const event = events.get(registration.eventId);
+        return event ? [{ ...registration, event }] : [];
+      })
+      .sort((first, second) => second.createdAt.getTime() - first.createdAt.getTime());
   },
   async create(data: EventCreateData) {
     const id = `event-${events.size + 1}`;
@@ -421,5 +435,48 @@ describe("Event API", () => {
     expect(otherStudentStatus.body).toEqual({ registered: false });
     expect(JSON.stringify(otherStudentStatus.body)).not.toContain("userId");
     expect(JSON.stringify(otherStudentStatus.body)).not.toContain("registration-");
+  });
+
+  it("lists only the session student's registrations, including unpublished events", async () => {
+    seedEvent({ id: "my-published-registration" });
+    seedEvent({ id: "my-draft-registration", status: EventStatus.DRAFT });
+    seedEvent({ id: "other-student-registration" });
+    await student.post("/api/events/my-published-registration/register");
+
+    registrations.set(`${studentId}:my-draft-registration`, {
+      id: "registration-draft",
+      userId: studentId,
+      eventId: "my-draft-registration",
+      createdAt: new Date("2026-10-10T00:00:00.000Z"),
+    });
+    registrations.set(`${otherStudentId}:other-student-registration`, {
+      id: "registration-other",
+      userId: otherStudentId,
+      eventId: "other-student-registration",
+      createdAt: new Date("2026-10-11T00:00:00.000Z"),
+    });
+
+    const response = await student.get("/api/me/registrations?userId=" + otherStudentId);
+
+    expect(response.status).toBe(200);
+    const listedRegistrations = response.body.registrations as Array<{
+      event: { id: string; status: EventStatus; organizerId?: string };
+    }>;
+    expect(listedRegistrations.map((item) => item.event.id).sort()).toEqual([
+      "my-draft-registration",
+      "my-published-registration",
+    ]);
+    const listedDraft = listedRegistrations.find(
+      (item) => item.event.id === "my-draft-registration",
+    );
+    expect(listedDraft?.event.status).toBe(EventStatus.DRAFT);
+    expect(listedDraft?.event).not.toHaveProperty("organizerId");
+    expect(JSON.stringify(response.body)).not.toContain(otherStudentId);
+    expect(JSON.stringify(response.body)).not.toContain("other-student-registration");
+  });
+
+  it("requires a signed-in student to list registrations", async () => {
+    expect((await request(app).get("/api/me/registrations")).status).toBe(401);
+    expect((await organizer.get("/api/me/registrations")).status).toBe(403);
   });
 });

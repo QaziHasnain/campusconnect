@@ -36,6 +36,7 @@ model User {
 
   organizedEvents Event[] @relation("EventOrganizer")
   registrations   Registration[]
+  passwordResetTokens PasswordResetToken[]
 }
 
 model Event {
@@ -70,6 +71,19 @@ model Registration {
 
   @@unique([userId, eventId])
   @@index([eventId])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Session {

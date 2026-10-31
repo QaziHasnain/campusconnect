@@ -107,6 +107,17 @@ export const eventListResponseSchema = z.object({
   events: z.array(apiEventSchema),
 })
 
+export const myRegistrationsResponseSchema = z.object({
+  registrations: z.array(
+    z.object({
+      id: z.string().min(1),
+      eventId: z.string().min(1),
+      createdAt: z.iso.datetime(),
+      event: apiEventSchema,
+    }),
+  ),
+})
+
 export type ApiEvent = z.infer<typeof apiEventSchema>
 export type ApiEventCategory = z.infer<typeof apiEventCategorySchema>
 
@@ -135,6 +146,14 @@ export const authUserResponseSchema = z.object({
   user: authUserSchema,
 })
 
+export const passwordResetRequestResponseSchema = z.object({
+  message: z.string(),
+})
+
+export const passwordResetResponseSchema = z.object({
+  message: z.literal('Password updated. Sign in with your new password.'),
+})
+
 export const currentUserResponseSchema = authUserResponseSchema
 
 export const logoutResponseSchema = z.object({
@@ -156,6 +175,24 @@ export function registerForEvent(eventId: string) {
     registrationResponseSchema,
     { method: 'POST', body: JSON.stringify({}) },
   )
+}
+
+export function getMyRegistrations() {
+  return apiRequest('/api/me/registrations', myRegistrationsResponseSchema)
+}
+
+export function requestPasswordReset(email: string) {
+  return apiRequest('/api/auth/forgot-password', passwordResetRequestResponseSchema, {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  })
+}
+
+export function resetPassword(token: string, password: string) {
+  return apiRequest('/api/auth/reset-password', passwordResetResponseSchema, {
+    method: 'POST',
+    body: JSON.stringify({ token, password }),
+  })
 }
 
 export function getHealth(): Promise<HealthResponse> {

@@ -5,9 +5,7 @@ import { useAuth } from '../auth/useAuth'
 import { EventCard } from '../components/EventCard'
 import {
   ApiError,
-  apiRequest,
-  eventListResponseSchema,
-  getEventRegistrationStatus,
+  getMyRegistrations,
 } from '../lib/api'
 import { toCampusEvent } from '../lib/events'
 import type { CampusEvent } from '../types/event'
@@ -37,19 +35,10 @@ export function MyRegistrationsPage() {
     let cancelled = false
 
     void (async () => {
-      const { events: publishedEvents } = await apiRequest(
-        '/api/events',
-        eventListResponseSchema,
-      )
-      const registrations = await Promise.all(
-        publishedEvents.map(async (event) => {
-          const { registered } = await getEventRegistrationStatus(event.id)
-          return registered ? toCampusEvent(event) : null
-        }),
-      )
+      const { registrations } = await getMyRegistrations()
 
       if (!cancelled) {
-        setEvents(registrations.filter((event): event is CampusEvent => event !== null))
+        setEvents(registrations.map(({ event }) => toCampusEvent(event)))
         setLoadedUserId(user.id)
         setError(null)
       }

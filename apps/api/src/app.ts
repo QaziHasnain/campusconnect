@@ -6,6 +6,7 @@ import helmet from "helmet";
 import { createAuthRouter, type AuthRepository } from "./auth.js";
 import {
   createEventRouter,
+  createMeRouter,
   createPrismaEventRepository,
   type EventRepository,
 } from "./events.js";
@@ -51,10 +52,43 @@ const authRepository: AuthRepository = {
       },
     }),
   create: (data) => prisma.user.create({ data, select: publicUserFields }),
+  storePasswordResetToken: async (data) => {
+    await prisma.$transaction([
+      prisma.passwordResetToken.deleteMany({ where: { userId: data.userId } }),
+      prisma.passwordResetToken.create({ data }),
+    ]);
+  },
+  resetPassword: (tokenHash, passwordHash, now) =>
+    prisma.$transaction(async (transaction) => {
+      const resetToken = await transaction.passwordResetToken.findUnique({
+        where: { tokenHash },
+        select: { id: true, userId: true, expiresAt: true },
+      });
+      if (!resetToken) return false;
+
+      const consumed = await transaction.passwordResetToken.deleteMany({
+        where: { id: resetToken.id, expiresAt: { gt: now } },
+      });
+      if (consumed.count !== 1) return false;
+
+      await transaction.user.update({
+        where: { id: resetToken.userId },
+        data: { passwordHash },
+      });
+      await transaction.passwordResetToken.deleteMany({
+        where: { userId: resetToken.userId },
+      });
+      await transaction.$executeRaw`
+        DELETE FROM "session" WHERE sess ->> 'userId' = ${resetToken.userId}
+      `;
+
+      return true;
+    }),
 };
 
 export function createApp(options: {
   authRepository?: AuthRepository;
+  authRouterOptions?: Parameters<typeof createAuthRouter>[1];
   eventRepository?: EventRepository;
   sessionStore?: Store;
 } = {}) {
@@ -65,6 +99,8 @@ export function createApp(options: {
       pool,
       createTableIfMissing: true,
     });
+  const eventRepository =
+    options.eventRepository ?? createPrismaEventRepository(prisma);
 
   app.use(helmet());
   app.use(
@@ -95,11 +131,15 @@ export function createApp(options: {
       },
     }),
   );
-  app.use("/api/auth", createAuthRouter(options.authRepository ?? authRepository));
+  app.use(
+    "/api/auth",
+    createAuthRouter(options.authRepository ?? authRepository, options.authRouterOptions),
+  );
   app.use(
     "/api/events",
-    createEventRouter(options.eventRepository ?? createPrismaEventRepository(prisma)),
+    createEventRouter(eventRepository),
   );
+  app.use("/api/me", createMeRouter(eventRepository));
   app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
     if (response.headersSent) {
       return next(error);

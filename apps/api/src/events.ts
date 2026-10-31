@@ -38,6 +38,16 @@ const registrationSelect = {
 export type RegistrationRecord = Prisma.RegistrationGetPayload<{
   select: typeof registrationSelect;
 }>;
+const registrationWithEventSelect = {
+  id: true,
+  eventId: true,
+  createdAt: true,
+  event: { select: eventSelect },
+} satisfies Prisma.RegistrationSelect;
+
+export type RegistrationWithEventRecord = Prisma.RegistrationGetPayload<{
+  select: typeof registrationWithEventSelect;
+}>;
 export type RegistrationResult =
   | { status: "created"; registration: RegistrationRecord }
   | { status: "not_found" }
@@ -75,6 +85,7 @@ export interface EventRepository {
   findUserRole(userId: string): Promise<UserRole | null>;
   registerForEvent(eventId: string, userId: string): Promise<RegistrationResult>;
   findRegistrationStatus(eventId: string, userId: string): Promise<boolean | null>;
+  listUserRegistrations(userId: string): Promise<RegistrationWithEventRecord[]>;
   create(data: EventCreateData): Promise<EventRecord>;
   updateOwned(id: string, organizerId: string, data: EventUpdateData): Promise<EventRecord | null>;
   deleteOwned(id: string, organizerId: string): Promise<boolean>;
@@ -147,6 +158,12 @@ export function createPrismaEventRepository(prisma: PrismaClient): EventReposito
       });
       return registration !== null;
     },
+    listUserRegistrations: (userId) =>
+      prisma.registration.findMany({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+        select: registrationWithEventSelect,
+      }),
     create: (data) => prisma.event.create({ data, select: eventSelect }),
     updateOwned: async (id, organizerId, data) => {
       const result = await prisma.event.updateMany({
@@ -441,6 +458,29 @@ export function createEventRouter(repository: EventRepository) {
       return response.status(204).end();
     } catch (error) {
       return sendServerError(response, "deletion", error);
+    }
+  });
+
+  return router;
+}
+
+export function createMeRouter(repository: EventRepository) {
+  const router = Router();
+
+  router.get("/registrations", async (request, response) => {
+    const userId = await requireRole(request, response, repository, UserRole.STUDENT);
+    if (!userId) return;
+
+    try {
+      const registrations = await repository.listUserRegistrations(userId);
+      return response.json({
+        registrations: registrations.map(({ event, ...registration }) => ({
+          ...registration,
+          event: toPublicEvent(event),
+        })),
+      });
+    } catch (error) {
+      return sendServerError(response, "student registrations lookup", error);
     }
   });
 

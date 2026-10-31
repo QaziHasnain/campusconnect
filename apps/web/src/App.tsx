@@ -10,7 +10,12 @@ import {
 import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext'
 import { useAuth } from './auth/useAuth'
-import { LoginPage, RegistrationPage } from './auth/AuthPages'
+import {
+  ForgotPasswordPage,
+  LoginPage,
+  RegistrationPage,
+  ResetPasswordPage,
+} from './auth/AuthPages'
 import { CategoryFilter } from './components/CategoryFilter'
 import { EventCard } from './components/EventCard'
 import { UpcomingEventRow } from './components/UpcomingEventRow'
@@ -455,6 +460,8 @@ function App() {
           <Route path="/registrations" element={<MyRegistrationsPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegistrationPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

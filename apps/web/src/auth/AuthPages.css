@@ -22,7 +22,8 @@
 }
 
 .auth-home-link:hover,
-.auth-alternate a:hover {
+.auth-alternate a:hover,
+.auth-inline-link:hover {
   color: var(--violet);
 }
 
@@ -87,6 +88,15 @@
 
 .auth-form input::placeholder {
   color: #a0a1af;
+}
+
+.auth-inline-link {
+  justify-self: end;
+  margin: 0 0 3px;
+  color: var(--violet);
+  font-size: 11px;
+  font-weight: 650;
+  text-decoration: none;
 }
 
 .auth-form input:focus,

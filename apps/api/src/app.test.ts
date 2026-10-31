@@ -18,6 +18,8 @@ describe("API", () => {
         findByEmail: vi.fn(),
         findById: vi.fn(),
         create: vi.fn(),
+        storePasswordResetToken: vi.fn(),
+        resetPassword: vi.fn(),
       },
     });
     const response = await request(app)
