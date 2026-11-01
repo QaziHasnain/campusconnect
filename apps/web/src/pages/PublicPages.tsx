@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
@@ -6,6 +6,7 @@ import {
   Check,
   CircleHelp,
   Compass,
+  ExternalLink,
   MapPin,
   ShieldCheck,
   UsersRound,
@@ -20,7 +21,12 @@ import {
 } from '../lib/api'
 import type { ApiEvent } from '../lib/api'
 import { formatEventDateTime } from '../lib/eventFormatting'
+import { getDirectionsUrl } from '../lib/venueMapUtils'
 import './PublicPages.css'
+
+const VenueMap = lazy(() =>
+  import('../components/VenueMap').then((module) => ({ default: module.VenueMap })),
+)
 
 const objectives = [
   'Centralize campus event information.',
@@ -33,15 +39,15 @@ const objectives = [
 const studentSteps = [
   ['Create an account', 'Register with your name, email, and password. Public sign-up creates a student account.'],
   ['Explore campus events', 'Browse published events and narrow the list by category or search.'],
-  ['View event details', 'Open an event to see its full description, schedule, venue, organizer, and configured capacity.'],
-  ['Register for an event', 'Sign in as a student and use the event registration control. Duplicate registration is prevented.'],
+  ['View event details', 'Open an event to see its full description, schedule, venue address, optional map, ticket price, organizer, and configured capacity.'],
+  ['Register for an event', 'Sign in as a student to register for a free event or complete Razorpay test checkout for a paid ticket.'],
   ['View registered events', 'Visit My Registrations to review events linked to your student account.'],
 ]
 
 const organizerSteps = [
   ['Obtain an authorized organizer account', 'Public registration creates student accounts. Organizer access must be provisioned through trusted administration.'],
   ['Open the organizer dashboard', 'Sign in with the authorized organizer account to view events you own.'],
-  ['Create an event', 'Enter the event title, description, category, venue, schedule, and optional capacity. New events start as drafts.'],
+  ['Create an event', 'Enter the event title, description, venue, schedule, optional map location, capacity, and INR ticket price. New events start as drafts.'],
   ['Edit event information', 'Update the details of an event owned by your account.'],
   ['Publish when ready', 'Publish an event to make it visible to students, or unpublish it back to draft.'],
   ['Manage your events', 'Review event status, edit details, publish or unpublish, and delete events without registrations.'],
@@ -62,7 +68,19 @@ const faqItems = [
   },
   {
     question: 'How does event registration work?',
-    answer: 'Sign in with a student account and choose Register on a published event. Your registrations are available from My Registrations.',
+    answer: 'Sign in with a student account. Free events register directly; paid events require a successful captured Razorpay test payment. Confirmed registrations appear in My Registrations.',
+  },
+  {
+    question: 'How does payment for a paid event work?',
+    answer: 'The API creates a Razorpay Standard Checkout order from the event price stored in integer paise. A registration is confirmed only after the server verifies the payment signature and captured status. This project is test-mode only.',
+  },
+  {
+    question: 'Can students retry a failed or cancelled payment?',
+    answer: 'Yes. Failed and cancelled payment attempts can be retried. A cancelled order may keep its seat reserved until that Razorpay order expires.',
+  },
+  {
+    question: 'How do event maps work?',
+    answer: 'Organizers may enter venue coordinates using the map picker. Event details show a map marker only when valid coordinates are saved, and display a directions link using coordinates or the venue address.',
   },
   {
     question: 'Can students register more than once?',
@@ -70,7 +88,7 @@ const faqItems = [
   },
   {
     question: 'How can organizers create events?',
-    answer: 'An authorized organizer signs in, opens the organizer dashboard, and uses the create-event form. New events are saved as drafts and can be published when ready.',
+    answer: 'An authorized organizer signs in, opens the organizer dashboard, and uses the create-event form to add optional venue coordinates and an INR ticket price. New events are saved as drafts and can be published when ready.',
   },
   {
     question: 'How are organizer permissions handled?',
@@ -354,17 +372,59 @@ export function EventDetailsPage() {
           <div className="event-detail-meta">
             <p><CalendarDays size={18} aria-hidden="true" /><span><strong>Date and time</strong>{formatEventDateTime(event.startAt)}{event.endAt ? ` — ${formatEventDateTime(event.endAt)}` : ''}</span></p>
             <p><MapPin size={18} aria-hidden="true" /><span><strong>Venue</strong>{event.venue}</span></p>
+            {event.venueAddress && (
+              <p><MapPin size={18} aria-hidden="true" /><span><strong>Venue address</strong>{event.venueAddress}</span></p>
+            )}
             <p><UsersRound size={18} aria-hidden="true" /><span><strong>Organized by</strong>{event.organizer.name}</span></p>
             {event.capacity !== null && (
               <p><UsersRound size={18} aria-hidden="true" /><span><strong>Maximum capacity</strong>{event.capacity} attendees</span></p>
             )}
+            <p><Check size={18} aria-hidden="true" /><span><strong>Ticket</strong>{event.ticketPricePaise === null
+              ? 'Free'
+              : new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(event.ticketPricePaise / 100)}</span></p>
           </div>
+          {(event.latitude !== null && event.longitude !== null) && (
+            <section className="event-venue-map" aria-labelledby="event-map-title">
+              <h2 id="event-map-title">Venue location</h2>
+              <Suspense fallback={<p role="status">Loading venue map…</p>}>
+                <VenueMap
+                  position={{ latitude: event.latitude, longitude: event.longitude }}
+                  ariaLabel={`Map showing ${event.title} venue`}
+                />
+              </Suspense>
+              <a
+                className="event-directions-link"
+                href={getDirectionsUrl(
+                  { latitude: event.latitude, longitude: event.longitude },
+                  event.venueAddress ?? event.venue,
+                ) ?? undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Get Directions <ExternalLink size={15} aria-hidden="true" />
+              </a>
+            </section>
+          )}
+          {event.latitude === null && event.longitude === null && (
+            <a
+              className="event-directions-link"
+              href={getDirectionsUrl(null, event.venueAddress ?? event.venue) ?? undefined}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Get Directions <ExternalLink size={15} aria-hidden="true" />
+            </a>
+          )}
           <section className="event-detail-description" aria-labelledby="event-description-title">
             <h2 id="event-description-title">About this event</h2>
             <p>{event.description}</p>
           </section>
           <div className="event-detail-register">
-            <EventRegistrationControl eventId={event.id} eventTitle={event.title} />
+            <EventRegistrationControl
+              eventId={event.id}
+              eventTitle={event.title}
+              ticketPricePaise={event.ticketPricePaise}
+            />
           </div>
         </div>
       </article>

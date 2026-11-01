@@ -33,6 +33,7 @@ export function toCampusEvent(event: ApiEvent): CampusEvent {
     title: event.title,
     date: event.startAt,
     venue: event.venue,
+    ticketPricePaise: event.ticketPricePaise,
     category,
     description: event.description,
     artwork: categoryArtwork[category],

@@ -20,6 +20,7 @@ describe.skipIf(!runDatabaseIntegrationTests)(
     let primaryUserId: string;
     let unrelatedUserId: string;
     let latestResetUrl: string | null;
+    let latestVerificationUrl: string | null;
     let testApp: Express;
 
     function createTestApp() {
@@ -28,6 +29,9 @@ describe.skipIf(!runDatabaseIntegrationTests)(
         authRouterOptions: {
           deliverResetLink: async (_email, resetUrl) => {
             latestResetUrl = resetUrl;
+          },
+          deliverVerificationLink: async (_email, _name, verificationUrl) => {
+            latestVerificationUrl = verificationUrl;
           },
         },
       });
@@ -67,9 +71,9 @@ describe.skipIf(!runDatabaseIntegrationTests)(
       const databaseUrl = new URL(env.databaseUrl);
       const localHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
       const configuredDatabase = decodeURIComponent(databaseUrl.pathname.slice(1));
-      if (!localHosts.has(databaseUrl.hostname) || configuredDatabase !== "campusconnect_demo") {
+      if (!localHosts.has(databaseUrl.hostname) || configuredDatabase !== "campusconnect_test") {
         throw new Error(
-          "Password reset expiration tests require the local campusconnect_demo database",
+          "Password reset expiration tests require the dedicated local campusconnect_test database",
         );
       }
 
@@ -84,12 +88,17 @@ describe.skipIf(!runDatabaseIntegrationTests)(
       const identity = await pool.query<{ database_name: string }>(
         "SELECT current_database() AS database_name",
       );
-      if (identity.rows[0]?.database_name !== "campusconnect_demo") {
-        throw new Error("Connected database is not campusconnect_demo");
+      if (identity.rows[0]?.database_name !== "campusconnect_test") {
+        throw new Error("Connected database is not campusconnect_test");
       }
 
       app = appFactory({
-        authRouterOptions: { deliverResetLink: async () => {} },
+        authRouterOptions: {
+          deliverResetLink: async () => {},
+          deliverVerificationLink: async (_email, _name, verificationUrl) => {
+            latestVerificationUrl = verificationUrl;
+          },
+        },
       });
       for (const [email, name, password, assignId] of [
         [primaryEmail, "Stage 5.1 Primary Test", initialPassword, (id: string) => {
@@ -105,6 +114,13 @@ describe.skipIf(!runDatabaseIntegrationTests)(
         expect(registration.status).toBe(201);
         expect(registration.body.user.role).toBe("STUDENT");
         assignId(registration.body.user.id);
+        expect(latestVerificationUrl).not.toBeNull();
+        const verificationToken = new URL(latestVerificationUrl!).searchParams.get("token");
+        expect(verificationToken).toMatch(/^[a-f0-9]{64}$/);
+        const verification = await supertest(app)
+          .post("/api/auth/verify-email")
+          .send({ token: verificationToken });
+        expect(verification.status).toBe(200);
       }
     }, 30_000);
 

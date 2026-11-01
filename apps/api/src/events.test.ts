@@ -12,6 +12,7 @@ import type {
   RegistrationResult,
   RegistrationWithEventRecord,
 } from "./events.js";
+import { areCoordinatesValid } from "./events.js";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 process.env.NODE_ENV = "test";
@@ -23,7 +24,9 @@ const users = new Map<string, User>();
 const events = new Map<string, EventRecord>();
 const registrations = new Map<string, RegistrationRecord>();
 const deletionBlockedEventIds = new Set<string>();
+const verificationTokens = new Map<string, { userId: string; tokenHash: string; expiresAt: Date }>();
 let app: import("express").Express;
+let lastVerificationUrl: string | null;
 let organizer: ReturnType<typeof request.agent>;
 let otherOrganizer: ReturnType<typeof request.agent>;
 let student: ReturnType<typeof request.agent>;
@@ -47,6 +50,12 @@ const authRepository: AuthRepository = {
     const user: User = {
       id: `user-${users.size + 1}`,
       ...data,
+      emailVerified: data.emailVerified ?? true,
+      emailVerifiedAt: new Date(),
+      whatsAppPhoneNumber: null,
+      whatsAppConsent: false,
+      whatsAppConsentAt: null,
+      whatsAppWithdrawnAt: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -57,6 +66,25 @@ const authRepository: AuthRepository = {
   async storePasswordResetToken() {},
   async resetPassword() {
     return false;
+  },
+  async storeVerificationToken(data) {
+    for (const [hash, token] of verificationTokens) {
+      if (token.userId === data.userId) verificationTokens.delete(hash);
+    }
+    verificationTokens.set(data.tokenHash, {
+      userId: data.userId,
+      tokenHash: data.tokenHash,
+      expiresAt: new Date(Date.now() + data.expiresInMs),
+    });
+  },
+  async consumeVerificationToken(tokenHash) {
+    const token = verificationTokens.get(tokenHash);
+    if (!token || token.expiresAt <= new Date()) return null;
+    verificationTokens.delete(tokenHash);
+    const user = users.get(token.userId);
+    if (!user) return null;
+    users.set(user.id, { ...user, emailVerified: true, emailVerifiedAt: new Date(), updatedAt: new Date() });
+    return { userId: token.userId };
   },
 };
 
@@ -90,6 +118,7 @@ const eventRepository: EventRepository = {
   async registerForEvent(eventId, userId): Promise<RegistrationResult> {
     const event = events.get(eventId);
     if (!event || event.status !== EventStatus.PUBLISHED) return { status: "not_found" };
+    if (event.ticketPricePaise !== null) return { status: "paid_event" };
 
     const registrationKey = `${userId}:${eventId}`;
     if (registrations.has(registrationKey)) return { status: "duplicate" };
@@ -160,6 +189,11 @@ beforeAll(async () => {
     authRepository,
     eventRepository,
     sessionStore: new MemoryStore(),
+    authRouterOptions: {
+      deliverVerificationLink: async (_email, _name, verificationUrl) => {
+        lastVerificationUrl = verificationUrl;
+      },
+    },
   });
 
   async function register(name: string, role: "STUDENT" | "ORGANIZER") {
@@ -172,6 +206,13 @@ beforeAll(async () => {
         password: "event-test-password",
       });
       expect(result.status).toBe(201);
+      const verificationToken = new URL(lastVerificationUrl ?? "http://localhost:5173/verify-email").searchParams.get("token");
+      expect(verificationToken).toBeTruthy();
+      await request(app).post("/api/auth/verify-email").send({ token: verificationToken });
+      const login = await agent
+        .post("/api/auth/login")
+        .send({ email, password: "event-test-password" });
+      expect(login.status).toBe(200);
       return { agent, id: result.body.user.id as string };
     }
 
@@ -181,6 +222,7 @@ beforeAll(async () => {
       email,
       passwordHash: await argon2.hash("event-test-password"),
       role: UserRole.ORGANIZER,
+      emailVerified: true,
     });
     const login = await agent
       .post("/api/auth/login")
@@ -222,6 +264,7 @@ function seedEvent({
   category = EventCategory.TECHNOLOGY,
   title = "Campus Technology Talk",
   capacity = null,
+  ticketPricePaise = null,
 }: {
   id: string;
   ownerId?: string;
@@ -230,6 +273,7 @@ function seedEvent({
   category?: EventCategory;
   title?: string;
   capacity?: number | null;
+  ticketPricePaise?: number | null;
 }) {
   const owner = users.get(ownerId);
   if (!owner) throw new Error("Missing test event owner");
@@ -244,6 +288,10 @@ function seedEvent({
     organizerId: ownerId,
     status,
     capacity,
+    venueAddress: null,
+    latitude: null,
+    longitude: null,
+    ticketPricePaise,
     createdAt: new Date("2026-10-01T00:00:00.000Z"),
     updatedAt: new Date("2026-10-01T00:00:00.000Z"),
     organizer: { name: owner.name },
@@ -333,6 +381,91 @@ describe("Event API", () => {
     expect(massAssignment.status).toBe(400);
   });
 
+  it("stores Stanford Memorial Auditorium coordinates and returns them from the public event API", async () => {
+    const response = await organizer.post("/api/events").send({
+      ...validEvent,
+      venue: "Stanford Memorial Auditorium",
+      venueAddress: "551 Jane Stanford Way, Stanford, CA 94305, USA",
+      latitude: 37.42902,
+      longitude: -122.16645,
+      ticketPricePaise: 1299,
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.body.event).toMatchObject({
+      venue: "Stanford Memorial Auditorium",
+      venueAddress: "551 Jane Stanford Way, Stanford, CA 94305, USA",
+      latitude: 37.42902,
+      longitude: -122.16645,
+      ticketPricePaise: 1299,
+    });
+    await organizer.patch(`/api/events/${response.body.event.id}`).send({ status: "PUBLISHED" });
+    const publicEvent = await request(app).get(`/api/events/${response.body.event.id}`);
+    expect(publicEvent.body.event).toMatchObject({
+      venue: "Stanford Memorial Auditorium",
+      venueAddress: "551 Jane Stanford Way, Stanford, CA 94305, USA",
+      latitude: 37.42902,
+      longitude: -122.16645,
+      ticketPricePaise: 1299,
+    });
+
+    const eventWithoutMap = await organizer.post("/api/events").send(validEvent);
+    expect(eventWithoutMap.status).toBe(201);
+    expect(eventWithoutMap.body.event).toMatchObject({
+      venueAddress: null,
+      latitude: null,
+      longitude: null,
+      ticketPricePaise: null,
+    });
+  });
+
+  it("rejects incomplete or out-of-range coordinates and non-positive ticket prices", async () => {
+    expect(
+      (
+        await organizer.post("/api/events").send({
+          ...validEvent,
+          latitude: 12.5,
+          longitude: null,
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await organizer.post("/api/events").send({
+          ...validEvent,
+          latitude: 90.01,
+          longitude: 0,
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (await organizer.post("/api/events").send({ ...validEvent, ticketPricePaise: 0 })).status,
+    ).toBe(400);
+
+    seedEvent({ id: "map-update" });
+    expect((await organizer.patch("/api/events/map-update").send({ latitude: 12 })).status).toBe(
+      400,
+    );
+    expect(
+      (
+        await organizer
+          .patch("/api/events/map-update")
+          .send({ latitude: 12.5, longitude: 77.6 })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await organizer
+          .patch("/api/events/map-update")
+          .send({ latitude: null, longitude: 77.6 })
+      ).status,
+    ).toBe(400);
+    expect(areCoordinatesValid(-90, -180)).toBe(true);
+    expect(areCoordinatesValid(90, 180)).toBe(true);
+    expect(areCoordinatesValid(90.1, 0)).toBe(false);
+    expect(areCoordinatesValid(null, 0)).toBe(false);
+  });
+
   it("allows an owning organizer to update, publish, and delete an event", async () => {
     seedEvent({ id: "owned", status: EventStatus.DRAFT });
 
@@ -417,7 +550,9 @@ describe("Event API", () => {
     const response = await organizer.delete("/api/events/event-with-registrations");
 
     expect(response.status).toBe(409);
-    expect(response.body).toEqual({ error: "Events with registrations cannot be deleted" });
+    expect(response.body).toEqual({
+      error: "Events with registrations or payment attempts cannot be deleted",
+    });
   });
 
   it("requires an authenticated student to register and check registration status", async () => {
@@ -468,6 +603,17 @@ describe("Event API", () => {
     expect(
       [...registrations.values()].filter((item) => item.eventId === "registration-full"),
     ).toHaveLength(1);
+  });
+
+  it("preserves free registrations and blocks the free endpoint for paid events", async () => {
+    seedEvent({ id: "free-registration" });
+    expect((await student.post("/api/events/free-registration/register")).status).toBe(201);
+
+    seedEvent({ id: "paid-registration", ticketPricePaise: 1000 });
+    const paidAttempt = await student.post("/api/events/paid-registration/register").send({});
+    expect(paidAttempt.status).toBe(409);
+    expect(paidAttempt.body.error).toBe("Payment is required for this event");
+    expect(registrations.has(`${studentId}:paid-registration`)).toBe(false);
   });
 
   it("returns only the current student's registration status", async () => {

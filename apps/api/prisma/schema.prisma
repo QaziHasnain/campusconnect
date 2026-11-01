@@ -25,18 +25,64 @@ enum EventStatus {
   PUBLISHED
 }
 
-model User {
-  id           String   @id @default(cuid())
-  name         String
-  email        String   @unique
-  passwordHash String
-  role         UserRole @default(STUDENT)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+enum EventPaymentStatus {
+  PENDING
+  SUCCESSFUL
+  FAILED
+  CANCELLED
+}
 
-  organizedEvents Event[] @relation("EventOrganizer")
-  registrations   Registration[]
-  passwordResetTokens PasswordResetToken[]
+enum WhatsAppReminderStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+enum NotificationType {
+  EVENT_REMINDER
+  EVENT_UPDATE
+}
+
+enum NotificationReminderStatus {
+  PENDING
+  PROCESSING
+  SENT
+  CANCELLED
+}
+
+enum NotificationPushDeliveryStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id                  String   @id @default(cuid())
+  name                String
+  email               String   @unique
+  passwordHash        String
+  role                UserRole @default(STUDENT)
+  emailVerified       Boolean  @default(false)
+  emailVerifiedAt     DateTime? @db.Timestamptz(3)
+  whatsAppPhoneNumber String?
+  whatsAppConsent     Boolean  @default(false)
+  whatsAppConsentAt   DateTime? @db.Timestamptz(3)
+  whatsAppWithdrawnAt DateTime? @db.Timestamptz(3)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  organizedEvents        Event[] @relation("EventOrganizer")
+  registrations          Registration[]
+  paymentAttempts        EventPaymentAttempt[]
+  passwordResetTokens    PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  notifications           Notification[]
+  pushSubscriptions       PushSubscription[]
+  notificationPreference NotificationPreference?
 }
 
 model Event {
@@ -50,11 +96,17 @@ model Event {
   organizerId String
   status      EventStatus   @default(DRAFT)
   capacity    Int?
+  venueAddress String?
+  latitude    Float?
+  longitude   Float?
+  ticketPricePaise Int?
   createdAt   DateTime      @default(now()) @db.Timestamptz(3)
   updatedAt   DateTime      @updatedAt @db.Timestamptz(3)
 
   organizer User @relation("EventOrganizer", fields: [organizerId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   registrations Registration[]
+  paymentAttempts EventPaymentAttempt[]
+  notifications Notification[]
 
   @@index([organizerId])
   @@index([status, startAt])
@@ -68,12 +120,168 @@ model Registration {
 
   user  User  @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   event Event @relation(fields: [eventId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  whatsappReminders WhatsAppReminder[]
+  notificationReminders NotificationReminder[]
+  paymentAttempt EventPaymentAttempt?
 
   @@unique([userId, eventId])
   @@index([eventId])
 }
 
+model EventPaymentAttempt {
+  id                String            @id @default(cuid())
+  userId            String
+  eventId           String
+  registrationId    String?           @unique
+  amountPaise       Int
+  currency          String            @default("INR")
+  status            EventPaymentStatus @default(PENDING)
+  razorpayOrderId   String?           @unique
+  razorpayPaymentId String?           @unique
+  expiresAt         DateTime          @db.Timestamptz(3)
+  createdAt         DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime          @updatedAt @db.Timestamptz(3)
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  event        Event         @relation(fields: [eventId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  registration Registration? @relation(fields: [registrationId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([eventId, status, expiresAt])
+  @@index([userId, eventId, status])
+}
+
+model RazorpayWebhookEvent {
+  id         String   @id
+  type       String
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+}
+
+model WhatsAppReminder {
+  id                String                 @id @default(cuid())
+  registrationId    String
+  offsetHours       Int
+  scheduledAt       DateTime               @db.Timestamptz(3)
+  status            WhatsAppReminderStatus @default(PENDING)
+  attemptCount      Int                    @default(0)
+  nextRetryAt       DateTime?              @db.Timestamptz(3)
+  providerMessageId String?
+  sentAt            DateTime?              @db.Timestamptz(3)
+  sanitizedError    String?
+  lockedAt          DateTime?              @db.Timestamptz(3)
+  createdAt         DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime               @updatedAt @db.Timestamptz(3)
+
+  registration Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([registrationId, offsetHours])
+  @@index([status, scheduledAt])
+  @@index([status, nextRetryAt])
+  @@index([status, lockedAt])
+}
+
+model Notification {
+  id              String           @id @default(cuid())
+  userId          String
+  title           String
+  message         String
+  type            NotificationType
+  relatedEventId  String?
+  reminderKey     String?          @unique
+  showInApp       Boolean          @default(true)
+  readAt          DateTime?        @db.Timestamptz(3)
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+
+  user             User                        @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  relatedEvent     Event?                      @relation(fields: [relatedEventId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  pushDeliveries   NotificationPushDelivery[]
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+}
+
+model PushSubscription {
+  id                  String   @id @default(cuid())
+  userId              String
+  endpointHash        String   @unique
+  encryptedPayload    String   @db.Text
+  createdAt           DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime @updatedAt @db.Timestamptz(3)
+
+  user       User                        @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  deliveries NotificationPushDelivery[]
+
+  @@index([userId])
+}
+
+model NotificationPreference {
+  id                  String   @id @default(cuid())
+  userId              String   @unique
+  inAppEnabled        Boolean  @default(true)
+  pushEnabled         Boolean  @default(false)
+  eventRemindersEnabled Boolean @default(true)
+  eventUpdatesEnabled Boolean  @default(true)
+  createdAt           DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+}
+
+model NotificationReminder {
+  id             String                    @id @default(cuid())
+  registrationId String
+  offsetHours    Int
+  scheduledAt    DateTime                  @db.Timestamptz(3)
+  status         NotificationReminderStatus @default(PENDING)
+  attemptCount   Int                       @default(0)
+  nextRetryAt    DateTime?                 @db.Timestamptz(3)
+  lockedAt       DateTime?                 @db.Timestamptz(3)
+  cancelledReason String?
+  sentAt         DateTime?                 @db.Timestamptz(3)
+  createdAt      DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime                  @updatedAt @db.Timestamptz(3)
+
+  registration Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([registrationId, offsetHours])
+  @@index([status, scheduledAt])
+  @@index([status, lockedAt])
+}
+
+model NotificationPushDelivery {
+  id             String                         @id @default(cuid())
+  notificationId String
+  subscriptionId String
+  status         NotificationPushDeliveryStatus @default(PENDING)
+  attemptCount   Int                            @default(0)
+  nextRetryAt    DateTime?                      @db.Timestamptz(3)
+  lockedAt       DateTime?                      @db.Timestamptz(3)
+  sanitizedError String?
+  sentAt         DateTime?                      @db.Timestamptz(3)
+  createdAt      DateTime                       @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime                       @updatedAt @db.Timestamptz(3)
+
+  notification Notification    @relation(fields: [notificationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  subscription PushSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([notificationId, subscriptionId])
+  @@index([status, nextRetryAt])
+  @@index([status, lockedAt])
+}
+
 model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model EmailVerificationToken {
   id        String   @id @default(cuid())
   userId    String
   tokenHash String   @unique

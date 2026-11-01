@@ -77,6 +77,43 @@
   gap: 15px;
 }
 
+.notification-bell-link {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid #e8e7ee;
+  border-radius: 10px;
+  color: var(--navy);
+  text-decoration: none;
+}
+
+.notification-bell-link:hover,
+.notification-bell-link[aria-current="page"] {
+  border-color: #c9c1ef;
+  color: var(--violet);
+  background: #f8f6ff;
+}
+
+.notification-bell-badge {
+  position: absolute;
+  top: -6px;
+  right: -7px;
+  min-width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0 4px;
+  border: 2px solid #fff;
+  border-radius: 99px;
+  color: #fff;
+  background: #d84c65;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1;
+}
+
 .header-login-link {
   color: var(--navy);
   font-size: 12px;
@@ -978,6 +1015,30 @@
   color: #845b1b;
   font-size: 10px;
   line-height: 1.5;
+}
+
+.payment-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: #755c22;
+  background: #fff5dc;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.payment-status--successful {
+  color: #28714d;
+  background: #eaf6ef;
+}
+
+.payment-status--failed,
+.payment-status--cancelled {
+  color: #9b3030;
+  background: #fff0f0;
 }
 
 .event-registration-control--compact .registration-message {

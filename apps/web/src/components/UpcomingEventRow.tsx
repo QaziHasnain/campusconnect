@@ -28,7 +28,12 @@ export function UpcomingEventRow({ event, index }: UpcomingEventRowProps) {
       </span>
       <span className="upcoming-organizer">{event.organizerName}</span>
       <Link className="upcoming-details-link" to={`/events/${encodeURIComponent(event.id)}`}>Details</Link>
-      <EventRegistrationControl eventId={event.id} eventTitle={event.title} compact />
+      <EventRegistrationControl
+        eventId={event.id}
+        eventTitle={event.title}
+        ticketPricePaise={event.ticketPricePaise ?? null}
+        compact
+      />
     </article>
   )
 }

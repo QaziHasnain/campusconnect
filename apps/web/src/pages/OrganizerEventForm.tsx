@@ -1,9 +1,14 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { z } from 'zod'
 import { ApiError, apiRequest, eventListResponseSchema, eventResponseSchema } from '../lib/api'
 import type { ApiEvent } from '../lib/api'
+import { isValidVenueCoordinates } from '../lib/venueMapUtils'
 import './OrganizerPages.css'
+
+const VenueMap = lazy(() =>
+  import('../components/VenueMap').then((module) => ({ default: module.VenueMap })),
+)
 
 const categorySchema = z.enum([
   'TECHNOLOGY',
@@ -18,6 +23,10 @@ const formSchema = z.object({
   description: z.string().trim().min(1, 'Enter an event description.').max(5000, 'Description must be 5000 characters or fewer.'),
   category: categorySchema,
   venue: z.string().trim().min(1, 'Enter a venue.').max(200, 'Venue must be 200 characters or fewer.'),
+  venueAddress: z.string().max(300, 'Venue address must be 300 characters or fewer.'),
+  latitude: z.string(),
+  longitude: z.string(),
+  ticketPriceInRupees: z.string(),
   startAt: z.string().min(1, 'Choose a start date and time.'),
   endAt: z.string(),
   capacity: z.string(),
@@ -37,6 +46,41 @@ const formSchema = z.object({
       message: 'Capacity must be a positive whole number.',
     })
   }
+  if (Boolean(values.latitude) !== Boolean(values.longitude)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['latitude'],
+      message: 'Choose both a latitude and longitude, or clear both fields.',
+    })
+  } else if (
+    values.latitude &&
+    !isValidVenueCoordinates(Number(values.latitude), Number(values.longitude))
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['latitude'],
+      message: 'Enter valid latitude and longitude coordinates.',
+    })
+  }
+  if (
+    values.ticketPriceInRupees &&
+    !/^\d+(?:\.\d{1,2})?$/.test(values.ticketPriceInRupees)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['ticketPriceInRupees'],
+      message: 'Enter a ticket price with up to two decimal places.',
+    })
+  } else   if (
+    values.ticketPriceInRupees &&
+    toTicketPricePaise(values.ticketPriceInRupees) === null
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['ticketPriceInRupees'],
+      message: 'Ticket price is too large.',
+    })
+  }
 })
 type EventFormValues = z.infer<typeof formSchema>
 
@@ -54,12 +98,24 @@ function toLocalDateTime(value: string) {
   return local.toISOString().slice(0, 16)
 }
 
+function toTicketPricePaise(value: string) {
+  if (!value) return null
+  const [wholeRupees, paise = ''] = value.split('.')
+  const amountPaise = Number(wholeRupees) * 100 + Number(paise.padEnd(2, '0'))
+  return Number.isSafeInteger(amountPaise) ? amountPaise : null
+}
+
 function eventToForm(event: ApiEvent) {
   return {
     title: event.title,
     description: event.description,
     category: event.category,
     venue: event.venue,
+    venueAddress: event.venueAddress ?? '',
+    latitude: event.latitude?.toString() ?? '',
+    longitude: event.longitude?.toString() ?? '',
+    ticketPriceInRupees:
+      event.ticketPricePaise === null ? '' : (event.ticketPricePaise / 100).toFixed(2),
     startAt: toLocalDateTime(event.startAt),
     endAt: event.endAt ? toLocalDateTime(event.endAt) : '',
     capacity: event.capacity?.toString() ?? '',
@@ -72,6 +128,10 @@ const emptyForm = {
   description: '',
   category: 'TECHNOLOGY' as const,
   venue: '',
+  venueAddress: '',
+  latitude: '',
+  longitude: '',
+  ticketPriceInRupees: '',
   startAt: '',
   endAt: '',
   capacity: '',
@@ -119,6 +179,14 @@ export function OrganizerEventForm() {
     setValues((current) => ({ ...current, [field]: value }))
   }
 
+  function selectVenuePosition({ latitude, longitude }: { latitude: number; longitude: number }) {
+    setValues((current) => ({
+      ...current,
+      latitude: latitude.toString(),
+      longitude: longitude.toString(),
+    }))
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError(null)
@@ -133,6 +201,10 @@ export function OrganizerEventForm() {
       description: parsed.data.description,
       category: parsed.data.category,
       venue: parsed.data.venue,
+      venueAddress: parsed.data.venueAddress.trim() || null,
+      latitude: parsed.data.latitude ? Number(parsed.data.latitude) : null,
+      longitude: parsed.data.longitude ? Number(parsed.data.longitude) : null,
+      ticketPricePaise: toTicketPricePaise(parsed.data.ticketPriceInRupees) || null,
       startAt: new Date(parsed.data.startAt).toISOString(),
       endAt: parsed.data.endAt ? new Date(parsed.data.endAt).toISOString() : null,
       capacity: parsed.data.capacity ? Number(parsed.data.capacity) : null,
@@ -164,6 +236,15 @@ export function OrganizerEventForm() {
       setIsSubmitting(false)
     }
   }
+
+  const latitude = values.latitude ? Number(values.latitude) : null
+  const longitude = values.longitude ? Number(values.longitude) : null
+  const mapPosition =
+    latitude !== null &&
+    longitude !== null &&
+    isValidVenueCoordinates(latitude, longitude)
+      ? { latitude, longitude }
+      : null
 
   return (
     <main className="organizer-page">
@@ -199,6 +280,14 @@ export function OrganizerEventForm() {
                 <input id="event-venue" maxLength={200} required value={values.venue} onChange={(event) => updateField('venue', event.target.value)} />
               </div>
               <div>
+                <label htmlFor="event-venue-address">Venue address (optional)</label>
+                <input id="event-venue-address" maxLength={300} value={values.venueAddress} onChange={(event) => updateField('venueAddress', event.target.value)} />
+              </div>
+              <div>
+                <label htmlFor="event-ticket-price">Ticket price (INR; leave blank for free)</label>
+                <input id="event-ticket-price" inputMode="decimal" placeholder="0.00" value={values.ticketPriceInRupees} onChange={(event) => updateField('ticketPriceInRupees', event.target.value)} />
+              </div>
+              <div>
                 <label htmlFor="event-start">Start date and time</label>
                 <input id="event-start" type="datetime-local" required value={values.startAt} onChange={(event) => updateField('startAt', event.target.value)} />
               </div>
@@ -220,6 +309,32 @@ export function OrganizerEventForm() {
                 </div>
               )}
             </div>
+
+            <section className="venue-picker" aria-labelledby="venue-picker-title">
+              <div>
+                <h2 id="venue-picker-title">Map location (optional)</h2>
+                <p>Select the venue on the map or enter its coordinates. No location is saved until you choose one.</p>
+              </div>
+              <div className="organizer-form-grid venue-coordinate-fields">
+                <div>
+                  <label htmlFor="event-latitude">Latitude</label>
+                  <input id="event-latitude" type="number" min={-90} max={90} step="any" value={values.latitude} onChange={(event) => updateField('latitude', event.target.value)} />
+                </div>
+                <div>
+                  <label htmlFor="event-longitude">Longitude</label>
+                  <input id="event-longitude" type="number" min={-180} max={180} step="any" value={values.longitude} onChange={(event) => updateField('longitude', event.target.value)} />
+                </div>
+              </div>
+              <Suspense fallback={<p role="status">Loading venue map…</p>}>
+                <VenueMap
+                  position={mapPosition}
+                  onSelect={selectVenuePosition}
+                  className="venue-map-shell--picker"
+                  ariaLabel="Select the event venue on the map"
+                />
+              </Suspense>
+              <p className="venue-map-attribution-note">Map data © OpenStreetMap contributors. The public tile service is best-effort and may be rate-limited.</p>
+            </section>
 
             {error && <p className="organizer-error" role="alert">{error}</p>}
             <div className="organizer-form-actions">

@@ -254,6 +254,36 @@
   margin-top: 13px;
 }
 
+.venue-picker {
+  margin-top: 10px;
+  padding-top: 20px;
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid #eeedf5;
+}
+
+.venue-picker h2 {
+  margin: 0;
+  color: var(--navy);
+  font-size: 15px;
+}
+
+.venue-picker > div:first-child p,
+.venue-map-attribution-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.venue-coordinate-fields {
+  margin-top: 0;
+}
+
+.venue-map-attribution-note {
+  margin: -4px 0 0;
+}
+
 @media (max-width: 720px) {
   .organizer-header {
     width: min(100% - 36px, 1200px);
@@ -275,6 +305,10 @@
     align-items: flex-start;
     flex-direction: column;
     padding: 18px;
+  }
+
+  .organizer-form {
+    padding: 21px 17px;
   }
 }
 

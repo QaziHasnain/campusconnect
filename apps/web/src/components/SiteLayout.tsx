@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   ArrowRight,
+  Bell,
   CalendarDays,
   Menu,
   X,
@@ -8,7 +9,7 @@ import {
 import type { ReactNode } from 'react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
-import { ApiError } from '../lib/api'
+import { ApiError, getNotifications } from '../lib/api'
 
 export function SiteLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth()
@@ -16,6 +17,11 @@ export function SiteLayout({ children }: { children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState<string | null>(null)
+  const [unreadNotifications, setUnreadNotifications] = useState<{
+    userId: string
+    count: number
+  } | null>(null)
+  const studentId = user?.role === 'STUDENT' ? user.id : null
 
   useEffect(() => {
     if (location.pathname === '/' && location.hash) {
@@ -24,6 +30,30 @@ export function SiteLayout({ children }: { children: ReactNode }) {
       }, 0)
     }
   }, [location.pathname, location.hash])
+
+  useEffect(() => {
+    if (!studentId) return
+
+    let active = true
+    const refresh = () => {
+      void getNotifications(undefined, 1)
+        .then((result) => {
+          if (active) setUnreadNotifications({ userId: studentId, count: result.unreadCount })
+        })
+        .catch(() => {
+          if (active) setUnreadNotifications({ userId: studentId, count: 0 })
+        })
+    }
+    const refreshFromPage = () => refresh()
+    refresh()
+    const interval = window.setInterval(refresh, 60_000)
+    window.addEventListener('campusconnect:notifications-updated', refreshFromPage)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+      window.removeEventListener('campusconnect:notifications-updated', refreshFromPage)
+    }
+  }, [studentId])
 
   async function handleLogout() {
     setLogoutError(null)
@@ -40,6 +70,11 @@ export function SiteLayout({ children }: { children: ReactNode }) {
       setIsLoggingOut(false)
     }
   }
+
+  const visibleUnreadCount =
+    unreadNotifications && unreadNotifications.userId === user?.id
+      ? unreadNotifications.count
+      : 0
 
   return (
     <div className="site-shell" id="top">
@@ -100,14 +135,34 @@ export function SiteLayout({ children }: { children: ReactNode }) {
 
         <div className="header-account-actions">
           {user ? (
-            <button
-              className="button button-primary header-cta"
-              type="button"
-              onClick={() => void handleLogout()}
-              disabled={isLoggingOut}
-            >
-              {isLoggingOut ? 'Signing out…' : 'Log out'}
-            </button>
+            <>
+              {user.role === 'STUDENT' && (
+                <Link
+                  className="notification-bell-link"
+                  to="/notifications"
+                  aria-label={
+                    visibleUnreadCount > 0
+                      ? `Notifications, ${visibleUnreadCount} unread`
+                      : 'Notifications'
+                  }
+                >
+                  <Bell size={19} aria-hidden="true" />
+                  {visibleUnreadCount > 0 && (
+                    <span className="notification-bell-badge" aria-hidden="true">
+                      {visibleUnreadCount > 99 ? '99+' : visibleUnreadCount}
+                    </span>
+                  )}
+                </Link>
+              )}
+              <button
+                className="button button-primary header-cta"
+                type="button"
+                onClick={() => void handleLogout()}
+                disabled={isLoggingOut}
+              >
+                {isLoggingOut ? 'Signing out…' : 'Log out'}
+              </button>
+            </>
           ) : (
             <>
               <Link className="header-login-link" to="/login">Log in</Link>

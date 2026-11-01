@@ -17,7 +17,9 @@ import {
   ForgotPasswordPage,
   LoginPage,
   RegistrationPage,
+  ResendVerificationPage,
   ResetPasswordPage,
+  VerifyEmailPage,
 } from './auth/AuthPages'
 import { CategoryFilter } from './components/CategoryFilter'
 import { EventCard } from './components/EventCard'
@@ -28,6 +30,7 @@ import { toApiCategory, toCampusEvent } from './lib/events'
 import type { CampusEvent } from './types/event'
 import type { EventCategory } from './types/event'
 import { MyRegistrationsPage } from './pages/MyRegistrationsPage'
+import { NotificationsPage } from './pages/NotificationsPage'
 import { OrganizerDashboard } from './pages/OrganizerDashboard'
 import { OrganizerEventForm } from './pages/OrganizerEventForm'
 import { SiteLayout } from './components/SiteLayout'
@@ -48,6 +51,17 @@ function OrganizerRoute({ children }: { children: ReactNode }) {
   }
   if (!user) return <Navigate to="/login" replace />
   if (user.role !== 'ORGANIZER') return <Navigate to="/" replace />
+  return children
+}
+
+function StudentRoute({ children }: { children: ReactNode }) {
+  const { user, isChecking } = useAuth()
+
+  if (isChecking) {
+    return <p className="route-status" role="status">Checking your sign-in status…</p>
+  }
+  if (!user) return <Navigate to="/login" replace />
+  if (user.role !== 'STUDENT') return <Navigate to="/" replace />
   return children
 }
 
@@ -432,6 +446,10 @@ function App() {
             <Route path="/events/:eventId" element={<EventDetailsPage />} />
             <Route path="/registrations" element={<MyRegistrationsPage />} />
             <Route
+              path="/notifications"
+              element={<StudentRoute><NotificationsPage /></StudentRoute>}
+            />
+            <Route
               path="/organizer"
               element={<OrganizerRoute><OrganizerDashboard /></OrganizerRoute>}
             />
@@ -447,6 +465,8 @@ function App() {
             <Route path="/register" element={<RegistrationPage />} />
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
+            <Route path="/resend-verification" element={<ResendVerificationPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </SiteLayout>

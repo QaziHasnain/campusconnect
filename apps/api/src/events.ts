@@ -3,11 +3,13 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import {
   EventCategory,
+  EventPaymentStatus,
   EventStatus,
   UserRole,
   type Prisma,
   type PrismaClient,
 } from "./generated/prisma/client.js";
+import { queueEventUpdateNotifications } from "./notifications.js";
 
 const eventSelect = {
   id: true,
@@ -20,6 +22,10 @@ const eventSelect = {
   organizerId: true,
   status: true,
   capacity: true,
+  venueAddress: true,
+  latitude: true,
+  longitude: true,
+  ticketPricePaise: true,
   createdAt: true,
   updatedAt: true,
   organizer: { select: { name: true } },
@@ -52,7 +58,8 @@ export type RegistrationResult =
   | { status: "created"; registration: RegistrationRecord }
   | { status: "not_found" }
   | { status: "duplicate" }
-  | { status: "capacity_reached" };
+  | { status: "capacity_reached" }
+  | { status: "paid_event" };
 
 export interface EventCreateData {
   title: string;
@@ -64,12 +71,27 @@ export interface EventCreateData {
   organizerId: string;
   status: EventStatus;
   capacity: number | null;
+  venueAddress: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  ticketPricePaise: number | null;
 }
 
 export type EventUpdateData = Partial<
   Pick<
     EventCreateData,
-    "title" | "description" | "category" | "venue" | "startAt" | "endAt" | "status" | "capacity"
+    | "title"
+    | "description"
+    | "category"
+    | "venue"
+    | "venueAddress"
+    | "latitude"
+    | "longitude"
+    | "ticketPricePaise"
+    | "startAt"
+    | "endAt"
+    | "status"
+    | "capacity"
   >
 >;
 
@@ -134,9 +156,10 @@ export function createPrismaEventRepository(prisma: PrismaClient): EventReposito
 
         const event = await transaction.event.findUnique({
           where: { id: eventId },
-          select: { status: true, capacity: true },
+          select: { status: true, capacity: true, ticketPricePaise: true },
         });
         if (!event || event.status !== EventStatus.PUBLISHED) return { status: "not_found" };
+        if (event.ticketPricePaise !== null) return { status: "paid_event" };
 
         const existing = await transaction.registration.findUnique({
           where: { userId_eventId: { userId, eventId } },
@@ -145,7 +168,17 @@ export function createPrismaEventRepository(prisma: PrismaClient): EventReposito
         if (existing) return { status: "duplicate" };
 
         const registrationCount = await transaction.registration.count({ where: { eventId } });
-        if (event.capacity !== null && registrationCount >= event.capacity) {
+        const activePaymentReservations = await transaction.eventPaymentAttempt.count({
+          where: {
+            eventId,
+            status: { in: [EventPaymentStatus.PENDING, EventPaymentStatus.CANCELLED] },
+            expiresAt: { gt: new Date() },
+          },
+        });
+        if (
+          event.capacity !== null &&
+          registrationCount + activePaymentReservations >= event.capacity
+        ) {
           return { status: "capacity_reached" };
         }
 
@@ -172,15 +205,24 @@ export function createPrismaEventRepository(prisma: PrismaClient): EventReposito
         select: registrationWithEventSelect,
       }),
     create: (data) => prisma.event.create({ data, select: eventSelect }),
-    updateOwned: async (id, organizerId, data) => {
-      const result = await prisma.event.updateMany({
-        where: { id, organizerId },
-        data,
-      });
-      if (result.count === 0) return null;
+    updateOwned: (id, organizerId, data) =>
+      prisma.$transaction(async (transaction) => {
+        const existing = await transaction.event.findFirst({
+          where: { id, organizerId },
+          select: { id: true },
+        });
+        if (!existing) return null;
 
-      return prisma.event.findUnique({ where: { id }, select: eventSelect });
-    },
+        const result = await transaction.event.updateMany({
+          where: { id, organizerId },
+          data,
+        });
+        if (result.count === 0) return null;
+
+        const event = await transaction.event.findUnique({ where: { id }, select: eventSelect });
+        if (event) await queueEventUpdateNotifications(transaction, id);
+        return event;
+      }),
     deleteOwned: async (id, organizerId) => {
       const result = await prisma.event.deleteMany({ where: { id, organizerId } });
       return result.count > 0;
@@ -195,6 +237,10 @@ const eventFieldsSchema = {
   description: z.string().trim().min(1).max(5000),
   category: z.enum(EventCategory),
   venue: z.string().trim().min(1).max(200),
+  venueAddress: z.string().trim().min(1).max(300).nullable(),
+  latitude: z.number().min(-90).max(90).nullable(),
+  longitude: z.number().min(-180).max(180).nullable(),
+  ticketPricePaise: z.number().int().positive().nullable(),
   startAt: dateTimeSchema,
   endAt: dateTimeSchema.nullable(),
   capacity: z.number().int().positive().nullable(),
@@ -206,12 +252,23 @@ const createEventSchema = z
     description: eventFieldsSchema.description,
     category: eventFieldsSchema.category,
     venue: eventFieldsSchema.venue,
+    venueAddress: eventFieldsSchema.venueAddress.optional(),
+    latitude: eventFieldsSchema.latitude.optional(),
+    longitude: eventFieldsSchema.longitude.optional(),
+    ticketPricePaise: eventFieldsSchema.ticketPricePaise.optional(),
     startAt: eventFieldsSchema.startAt,
     endAt: eventFieldsSchema.endAt.optional(),
     capacity: eventFieldsSchema.capacity.optional(),
   })
   .strict()
   .superRefine((event, context) => {
+    if (!areCoordinatesValid(event.latitude ?? null, event.longitude ?? null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["latitude"],
+        message: "Latitude and longitude must both be provided or both be empty",
+      });
+    }
     if (event.endAt && event.endAt < event.startAt) {
       context.addIssue({
         code: "custom",
@@ -227,6 +284,10 @@ const updateEventSchema = z
     description: eventFieldsSchema.description.optional(),
     category: eventFieldsSchema.category.optional(),
     venue: eventFieldsSchema.venue.optional(),
+    venueAddress: eventFieldsSchema.venueAddress.optional(),
+    latitude: eventFieldsSchema.latitude.optional(),
+    longitude: eventFieldsSchema.longitude.optional(),
+    ticketPricePaise: eventFieldsSchema.ticketPricePaise.optional(),
     startAt: eventFieldsSchema.startAt.optional(),
     endAt: eventFieldsSchema.endAt.optional(),
     status: z.enum(EventStatus).optional(),
@@ -245,6 +306,18 @@ const updateEventSchema = z
       });
     }
   });
+
+export function areCoordinatesValid(latitude: number | null, longitude: number | null): boolean {
+  if (latitude === null || longitude === null) return latitude === null && longitude === null;
+  return (
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180
+  );
+}
 
 const listEventsQuerySchema = z
   .object({
@@ -374,6 +447,9 @@ export function createEventRouter(repository: EventRepository) {
       if (result.status === "capacity_reached") {
         return response.status(409).json({ error: "Event is full" });
       }
+      if (result.status === "paid_event") {
+        return response.status(409).json({ error: "Payment is required for this event" });
+      }
       return response.status(201).json({
         registration: toPublicRegistration(result.registration),
       });
@@ -415,6 +491,10 @@ export function createEventRouter(repository: EventRepository) {
         organizerId,
         status: EventStatus.DRAFT,
         capacity: parsed.data.capacity ?? null,
+        venueAddress: parsed.data.venueAddress ?? null,
+        latitude: parsed.data.latitude ?? null,
+        longitude: parsed.data.longitude ?? null,
+        ticketPricePaise: parsed.data.ticketPricePaise ?? null,
       };
       const event = await repository.create(data);
       return response.status(201).json({ event: toPublicEvent(event) });
@@ -443,6 +523,16 @@ export function createEventRouter(repository: EventRepository) {
       const nextStartAt = parsed.data.startAt ?? existing.startAt;
       const nextEndAt =
         parsed.data.endAt === undefined ? existing.endAt : parsed.data.endAt;
+      const nextLatitude =
+        parsed.data.latitude === undefined ? existing.latitude : parsed.data.latitude;
+      const nextLongitude =
+        parsed.data.longitude === undefined ? existing.longitude : parsed.data.longitude;
+      if (!areCoordinatesValid(nextLatitude, nextLongitude)) {
+        return response.status(400).json({
+          error: "Invalid event details",
+          details: { latitude: ["Latitude and longitude must both be provided or both be empty"] },
+        });
+      }
       if (nextEndAt && nextEndAt < nextStartAt) {
         return response.status(400).json({
           error: "Invalid event details",
@@ -478,7 +568,7 @@ export function createEventRouter(repository: EventRepository) {
     } catch (error) {
       if (isForeignKeyConstraintError(error)) {
         return response.status(409).json({
-          error: "Events with registrations cannot be deleted",
+          error: "Events with registrations or payment attempts cannot be deleted",
         });
       }
       return sendServerError(response, "deletion", error);

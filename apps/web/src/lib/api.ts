@@ -103,6 +103,10 @@ export const apiEventSchema = z.object({
   description: z.string(),
   category: apiEventCategorySchema,
   venue: z.string(),
+  venueAddress: z.string().nullable(),
+  latitude: z.number().nullable(),
+  longitude: z.number().nullable(),
+  ticketPricePaise: z.number().int().positive().nullable(),
   startAt: z.iso.datetime(),
   endAt: z.iso.datetime().nullable(),
   status: z.enum(['DRAFT', 'PUBLISHED']),
@@ -131,8 +135,83 @@ export const myRegistrationsResponseSchema = z.object({
   ),
 })
 
+export const whatsAppPreferencesResponseSchema = z.object({
+  enabled: z.boolean(),
+  phoneNumber: z.string().nullable(),
+  consent: z.boolean(),
+  consentGrantedAt: z.iso.datetime().nullable(),
+})
+
+export const notificationPreferencesSchema = z.object({
+  inAppEnabled: z.boolean(),
+  pushEnabled: z.boolean(),
+  eventRemindersEnabled: z.boolean(),
+  eventUpdatesEnabled: z.boolean(),
+})
+
+export const notificationItemSchema = z.object({
+  id: z.string().min(1),
+  title: z.string(),
+  message: z.string(),
+  type: z.enum(['EVENT_REMINDER', 'EVENT_UPDATE']),
+  relatedEventId: z.string().nullable(),
+  readAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+})
+
+export const notificationsResponseSchema = z.object({
+  notifications: z.array(notificationItemSchema),
+  unreadCount: z.number().int().nonnegative(),
+  nextCursor: z.string().nullable(),
+})
+
+export const notificationPreferencesResponseSchema = z.object({
+  preferences: notificationPreferencesSchema,
+})
+
+export const notificationReadResponseSchema = z.object({
+  notification: notificationItemSchema,
+})
+
+export const notificationReadAllResponseSchema = z.object({
+  updatedCount: z.number().int().nonnegative(),
+})
+
+export const notificationPushConfigResponseSchema = z.object({
+  vapidPublicKey: z.string().nullable(),
+})
+
+export type NotificationItem = z.infer<typeof notificationItemSchema>
+export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>
+
 export type ApiEvent = z.infer<typeof apiEventSchema>
 export type ApiEventCategory = z.infer<typeof apiEventCategorySchema>
+
+export const paymentStatusSchema = z.enum(['PENDING', 'SUCCESSFUL', 'FAILED', 'CANCELLED'])
+
+export const paymentConfigResponseSchema = z.object({
+  enabled: z.boolean(),
+  keyId: z.string().nullable(),
+  mode: z.enum(['test', 'live']),
+  message: z.string().nullable(),
+})
+
+export const paymentOrderResponseSchema = z.object({
+  paymentAttemptId: z.string().min(1),
+  orderId: z.string().min(1),
+  amountPaise: z.number().int().positive(),
+  currency: z.literal('INR'),
+  keyId: z.string().min(1),
+})
+
+export const paymentStatusResponseSchema = z.object({
+  paymentAttemptId: z.string().min(1),
+  status: paymentStatusSchema,
+})
+
+export const paymentVerificationResponseSchema = paymentStatusResponseSchema
+
+export type PaymentStatus = z.infer<typeof paymentStatusSchema>
 
 export const registrationResponseSchema = z.object({
   registration: z.object({
@@ -167,6 +246,14 @@ export const passwordResetResponseSchema = z.object({
   message: z.literal('Password updated. Sign in with your new password.'),
 })
 
+export const emailVerificationResponseSchema = z.object({
+  message: z.string(),
+})
+
+export const verificationRequestResponseSchema = z.object({
+  message: z.string(),
+})
+
 export const currentUserResponseSchema = authUserResponseSchema
 
 export const logoutResponseSchema = z.object({
@@ -190,8 +277,121 @@ export function registerForEvent(eventId: string) {
   )
 }
 
+export function getPaymentConfig() {
+  return apiRequest('/api/payments/config', paymentConfigResponseSchema)
+}
+
+export function createEventPaymentOrder(eventId: string) {
+  return apiRequest(
+    `/api/payments/events/${encodeURIComponent(eventId)}/orders`,
+    paymentOrderResponseSchema,
+    { method: 'POST', body: JSON.stringify({}) },
+  )
+}
+
+export function verifyEventPayment(
+  paymentAttemptId: string,
+  paymentId: string,
+  signature: string,
+) {
+  return apiRequest(
+    '/api/payments/checkout/verify',
+    paymentVerificationResponseSchema,
+    {
+      method: 'POST',
+      body: JSON.stringify({ paymentAttemptId, paymentId, signature }),
+    },
+  )
+}
+
+export function getEventPaymentStatus(paymentAttemptId: string) {
+  return apiRequest(
+    `/api/payments/${encodeURIComponent(paymentAttemptId)}`,
+    paymentStatusResponseSchema,
+  )
+}
+
+export function cancelEventPayment(paymentAttemptId: string) {
+  return apiRequest(
+    `/api/payments/${encodeURIComponent(paymentAttemptId)}/cancel`,
+    paymentStatusResponseSchema,
+    { method: 'POST', body: JSON.stringify({}) },
+  )
+}
+
 export function getMyRegistrations() {
   return apiRequest('/api/me/registrations', myRegistrationsResponseSchema)
+}
+
+export function getWhatsAppPreferences() {
+  return apiRequest('/api/me/whatsapp', whatsAppPreferencesResponseSchema)
+}
+
+export function updateWhatsAppPreferences(phoneNumber: string, consent: boolean) {
+  return apiRequest('/api/me/whatsapp', whatsAppPreferencesResponseSchema, {
+    method: 'PUT',
+    body: JSON.stringify({ phoneNumber, consent }),
+  })
+}
+
+export function getNotifications(cursor?: string, limit = 30) {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (cursor) query.set('cursor', cursor)
+  return apiRequest(`/api/me/notifications?${query}`, notificationsResponseSchema)
+}
+
+export function markNotificationRead(notificationId: string) {
+  return apiRequest(
+    `/api/me/notifications/${encodeURIComponent(notificationId)}/read`,
+    notificationReadResponseSchema,
+    { method: 'PATCH', body: JSON.stringify({}) },
+  )
+}
+
+export function markAllNotificationsRead() {
+  return apiRequest(
+    '/api/me/notifications/read-all',
+    notificationReadAllResponseSchema,
+    { method: 'POST', body: JSON.stringify({}) },
+  )
+}
+
+export function getNotificationPreferences() {
+  return apiRequest(
+    '/api/me/notifications/preferences',
+    notificationPreferencesResponseSchema,
+  )
+}
+
+export function updateNotificationPreferences(preferences: NotificationPreferences) {
+  return apiRequest(
+    '/api/me/notifications/preferences',
+    notificationPreferencesResponseSchema,
+    { method: 'PUT', body: JSON.stringify(preferences) },
+  )
+}
+
+export function getNotificationPushConfig() {
+  return apiRequest(
+    '/api/me/notifications/push-config',
+    notificationPushConfigResponseSchema,
+  )
+}
+
+export function savePushSubscription(subscription: PushSubscriptionJSON) {
+  return apiRequest(
+    '/api/me/notifications/subscriptions',
+    z.object({ subscribed: z.literal(true) }),
+    { method: 'POST', body: JSON.stringify(subscription) },
+  )
+}
+
+export function removePushSubscription(endpoint: string) {
+  return apiRequest(
+    '/api/me/notifications/subscriptions',
+    z.undefined(),
+    { method: 'DELETE', body: JSON.stringify({ endpoint }) },
+  )
 }
 
 export function deleteOrganizerEvent(eventId: string) {
@@ -213,6 +413,20 @@ export function resetPassword(token: string, password: string) {
   return apiRequest('/api/auth/reset-password', passwordResetResponseSchema, {
     method: 'POST',
     body: JSON.stringify({ token, password }),
+  })
+}
+
+export function verifyEmail(token: string) {
+  return apiRequest('/api/auth/verify-email', emailVerificationResponseSchema, {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  })
+}
+
+export function resendVerification(email: string) {
+  return apiRequest('/api/auth/resend-verification', verificationRequestResponseSchema, {
+    method: 'POST',
+    body: JSON.stringify({ email }),
   })
 }
 

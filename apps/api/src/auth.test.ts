@@ -15,13 +15,19 @@ const resetTokens = new Map<
   string,
   { userId: string; tokenHash: string; expiresAt: Date }
 >();
+const verificationTokens = new Map<
+  string,
+  { userId: string; tokenHash: string; expiresAt: Date }
+>();
 const sessionStore = new MemoryStore();
 let app: import("express").Express;
 let deliveredResetUrl: string | null = null;
+let deliveredVerificationUrl: string | null = null;
 
 const repository: AuthRepository = {
   async findByEmail(email) {
-    return [...users.values()].find((user) => user.email === email) ?? null;
+    const user = [...users.values()].find((user) => user.email === email);
+    return user ?? null;
   },
   async findById(id) {
     const user = users.get(id);
@@ -36,6 +42,12 @@ const repository: AuthRepository = {
     const user: User = {
       id: `test-${users.size + 1}`,
       ...data,
+      emailVerified: data.emailVerified ?? false,
+      emailVerifiedAt: null,
+      whatsAppPhoneNumber: null,
+      whatsAppConsent: false,
+      whatsAppConsentAt: null,
+      whatsAppWithdrawnAt: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -92,6 +104,27 @@ const repository: AuthRepository = {
 
     return true;
   },
+  async storeVerificationToken(data) {
+    for (const [hash, token] of verificationTokens) {
+      if (token.userId === data.userId) verificationTokens.delete(hash);
+    }
+    verificationTokens.set(data.tokenHash, {
+      ...data,
+      expiresAt: new Date(Date.now() + data.expiresInMs),
+    });
+  },
+  async consumeVerificationToken(tokenHash) {
+    const token = verificationTokens.get(tokenHash);
+    if (!token || token.expiresAt <= new Date()) {
+      return null;
+    }
+    verificationTokens.delete(tokenHash);
+
+    const user = users.get(token.userId);
+    if (!user) return null;
+    users.set(user.id, { ...user, emailVerified: true, emailVerifiedAt: new Date(), updatedAt: new Date() });
+    return { userId: token.userId };
+  },
 };
 
 beforeAll(async () => {
@@ -102,6 +135,9 @@ beforeAll(async () => {
     authRouterOptions: {
       deliverResetLink: async (_email, resetUrl) => {
         deliveredResetUrl = resetUrl;
+      },
+      deliverVerificationLink: async (_email, _name, verificationUrl) => {
+        deliveredVerificationUrl = verificationUrl;
       },
     },
   });
@@ -118,6 +154,7 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
     });
 
     expect(registration.status).toBe(201);
+    expect(registration.body.message).toContain("verify");
     expect(registration.body.user).toMatchObject({
       name: "Ada Lovelace",
       email: "ada@example.com",
@@ -131,7 +168,18 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
       true,
     );
 
-    const originalCookie = registration.headers["set-cookie"][0].split(";")[0];
+    const unverifiedLogin = await agent.post("/api/auth/login").send({
+      email: " ADA@EXAMPLE.COM ",
+      password: "correct-horse-battery",
+    });
+
+    expect(unverifiedLogin.status).toBe(403);
+    expect(unverifiedLogin.body.error).toBe("EMAIL_NOT_VERIFIED");
+
+    const verificationToken = new URL(deliveredVerificationUrl!).searchParams.get("token");
+    const verified = await request(app).post("/api/auth/verify-email").send({ token: verificationToken });
+    expect(verified.status).toBe(200);
+
     const login = await agent.post("/api/auth/login").send({
       email: " ADA@EXAMPLE.COM ",
       password: "correct-horse-battery",
@@ -139,7 +187,7 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
 
     expect(login.status).toBe(200);
     expect(login.body.user).not.toHaveProperty("passwordHash");
-    expect(login.headers["set-cookie"][0].split(";")[0]).not.toBe(originalCookie);
+    expect(login.headers["set-cookie"]).toBeDefined();
 
     const currentUser = await agent.get("/api/auth/me");
     expect(currentUser.status).toBe(200);
@@ -274,6 +322,11 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
       .send({ token, password: "another-new-password" });
     expect(reused.status).toBe(400);
 
+    const emailVerifiedUser = [...users.values()].find((user) => user.email === "ada@example.com");
+    if (emailVerifiedUser) {
+      users.set(emailVerifiedUser.id, { ...emailVerifiedUser, emailVerified: true, emailVerifiedAt: new Date(), updatedAt: new Date() });
+    }
+
     const login = await request(app)
       .post("/api/auth/login")
       .send({ email: "ada@example.com", password: "a-new-valid-password" });
@@ -319,6 +372,16 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
       password: "original-password",
     });
     expect(registration.status).toBe(201);
+
+    const verificationToken = new URL(deliveredVerificationUrl!).searchParams.get("token");
+    const verified = await request(app).post("/api/auth/verify-email").send({ token: verificationToken });
+    expect(verified.status).toBe(200);
+
+    const login = await agent.post("/api/auth/login").send({
+      email: "session-reset@example.com",
+      password: "original-password",
+    });
+    expect(login.status).toBe(200);
     expect((await agent.get("/api/auth/me")).status).toBe(200);
 
     await request(app)

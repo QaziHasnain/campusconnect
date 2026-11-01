@@ -1,0 +1,48 @@
+.venue-map-shell {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #e6e5ed;
+  border-radius: 10px;
+  background: #f2f1f0;
+}
+
+.venue-map {
+  width: 100%;
+  height: clamp(250px, 42vw, 390px);
+}
+
+.venue-map-shell--picker .venue-map {
+  height: 300px;
+  cursor: crosshair;
+}
+
+.venue-map-marker {
+  display: grid;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #765fd4;
+  box-shadow: 0 2px 9px rgb(34 28 83 / 35%);
+}
+
+.venue-map-marker span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.leaflet-container {
+  font: inherit;
+}
+
+@media (max-width: 640px) {
+  .venue-map {
+    height: 280px;
+  }
+
+  .venue-map-shell--picker .venue-map {
+    height: 260px;
+  }
+}

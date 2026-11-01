@@ -68,7 +68,11 @@ export function EventCard({
         {registrationControl ? (
           <div className="event-registration-control">{registrationControl}</div>
         ) : showRegistrationControl ? (
-          <EventRegistrationControl eventId={event.id} eventTitle={event.title} />
+          <EventRegistrationControl
+            eventId={event.id}
+            eventTitle={event.title}
+            ticketPricePaise={event.ticketPricePaise ?? null}
+          />
         ) : null}
       </div>
     </article>

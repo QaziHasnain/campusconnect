@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { ArrowRight } from 'lucide-react'
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { z } from 'zod'
@@ -8,7 +8,9 @@ import {
   apiRequest,
   authUserResponseSchema,
   requestPasswordReset,
+  resendVerification,
   resetPassword,
+  verifyEmail,
 } from '../lib/api'
 import './AuthPages.css'
 
@@ -51,6 +53,7 @@ function getApiErrorMessage(error: unknown, action: 'login' | 'register') {
   if (error instanceof ApiError) {
     if (error.status === 400) return 'Please review the information and try again.'
     if (action === 'login' && error.status === 401) return 'The email or password is incorrect.'
+    if (action === 'login' && error.status === 403) return 'This email has not been verified yet. Check your inbox or resend the verification email.'
     if (action === 'register' && error.status === 409) {
       return 'An account with this email already exists. Try signing in instead.'
     }
@@ -176,9 +179,14 @@ export function LoginPage() {
           required
           maxLength={128}
         />
-        <Link className="auth-inline-link" to="/forgot-password">
-          Forgot password?
-        </Link>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+          <Link className="auth-inline-link" to="/forgot-password">
+            Forgot password?
+          </Link>
+          <Link className="auth-inline-link" to="/resend-verification">
+            Resend verification email
+          </Link>
+        </div>
         {error && <p className="auth-error" role="alert">{error}</p>}
         <button className="button button-primary auth-submit" type="submit" disabled={isChecking || isSubmitting}>
           {isSubmitting ? 'Signing in…' : 'Sign in'}
@@ -252,6 +260,119 @@ export function ForgotPasswordPage() {
         {message && <p className="auth-notice" role="status">{message}</p>}
         <button className="button button-primary auth-submit" type="submit" disabled={isChecking || isSubmitting}>
           {isSubmitting ? 'Preparing reset…' : 'Request reset link'}
+          {!isSubmitting && <ArrowRight size={16} aria-hidden="true" />}
+        </button>
+      </form>
+    </AuthPageFrame>
+  )
+}
+
+export function VerifyEmailPage() {
+  const [searchParams] = useSearchParams()
+  const token = searchParams.get('token') ?? ''
+  const [state, setState] = useState<'loading' | 'success' | 'error'>(token ? 'loading' : 'error')
+  const [message, setMessage] = useState<string>(token ? 'Verifying your email…' : 'This verification link is invalid or has expired.')
+
+  useEffect(() => {
+    if (!token) {
+      return
+    }
+
+    window.history.replaceState({}, '', '/verify-email')
+
+    void verifyEmail(token)
+      .then((response) => {
+        setState('success')
+        setMessage(response.message)
+      })
+      .catch((requestError) => {
+        const nextMessage = requestError instanceof ApiError && requestError.status === 400
+          ? 'This verification link is invalid or has expired.'
+          : 'We could not verify your email right now. Please try again.'
+        setState('error')
+        setMessage(nextMessage)
+      })
+  }, [token])
+
+  return (
+    <AuthPageFrame
+      title="Verify your email."
+      description="Confirm your email address to activate your CampusConnect account."
+      alternate="Ready to sign in?"
+      alternatePath="/login"
+      alternateLabel="Back to login"
+    >
+      <p className={state === 'success' ? 'auth-notice' : state === 'error' ? 'auth-error' : 'auth-notice'} role={state === 'error' ? 'alert' : 'status'}>
+        {message}
+      </p>
+      {state === 'success' && (
+        <Link className="button button-primary auth-submit" to="/login">
+          Go to login
+        </Link>
+      )}
+    </AuthPageFrame>
+  )
+}
+
+export function ResendVerificationPage() {
+  const { user, isChecking } = useAuth()
+  const [error, setError] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  if (!isChecking && user) return <Navigate to="/" replace />
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError(null)
+    setMessage(null)
+
+    const formData = new FormData(event.currentTarget)
+    const parsed = passwordResetRequestInputSchema.safeParse({ email: formData.get('email') })
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]?.message ?? 'Enter a valid email address.')
+      return
+    }
+
+    setIsSubmitting(true)
+    try {
+      const response = await resendVerification(parsed.data.email)
+      setMessage(response.message)
+    } catch (requestError) {
+      setError(
+        requestError instanceof ApiError && requestError.status === 429
+          ? 'Too many requests. Please wait before trying again.'
+          : 'Unable to reach CampusConnect. Check your connection and try again.',
+      )
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <AuthPageFrame
+      title="Resend verification email."
+      description="We will send a fresh verification link to the address below."
+      alternate="Need to sign in?"
+      alternatePath="/login"
+      alternateLabel="Return to login"
+    >
+      {isChecking && <InitializingMessage />}
+      <form className="auth-form" onSubmit={handleSubmit} noValidate>
+        <label htmlFor="resend-verification-email">Email address</label>
+        <input
+          id="resend-verification-email"
+          name="email"
+          type="email"
+          autoComplete="email"
+          placeholder="you@college.edu"
+          required
+          maxLength={254}
+        />
+        {error && <p className="auth-error" role="alert">{error}</p>}
+        {message && <p className="auth-notice" role="status">{message}</p>}
+        <button className="button button-primary auth-submit" type="submit" disabled={isSubmitting}>
+          {isSubmitting ? 'Sending…' : 'Send verification link'}
           {!isSubmitting && <ArrowRight size={16} aria-hidden="true" />}
         </button>
       </form>
@@ -343,10 +464,11 @@ export function ResetPasswordPage() {
 }
 
 export function RegistrationPage() {
-  const { user, isChecking, initializationError, refreshUser } = useAuth()
-  const navigate = useNavigate()
+  const { user, isChecking, initializationError } = useAuth()
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isConfirmationVisible, setIsConfirmationVisible] = useState(false)
+  const [registeredEmail, setRegisteredEmail] = useState('')
 
   if (!isChecking && user) return <Navigate to="/" replace />
 
@@ -371,8 +493,8 @@ export function RegistrationPage() {
         method: 'POST',
         body: JSON.stringify(parsed.data),
       })
-      const currentUser = await refreshUser()
-      navigate(currentUser.role === 'ORGANIZER' ? '/organizer' : '/', { replace: true })
+      setRegisteredEmail(parsed.data.email)
+      setIsConfirmationVisible(true)
     } catch (requestError) {
       setError(getApiErrorMessage(requestError, 'register'))
     } finally {
@@ -392,44 +514,56 @@ export function RegistrationPage() {
       {initializationError && (
         <p className="auth-error" role="alert">{initializationError}</p>
       )}
-      <form className="auth-form" onSubmit={handleSubmit} noValidate>
-        <label htmlFor="register-name">Full name</label>
-        <input
-          id="register-name"
-          name="name"
-          type="text"
-          autoComplete="name"
-          placeholder="Your name"
-          required
-          maxLength={100}
-        />
-        <label htmlFor="register-email">Email address</label>
-        <input
-          id="register-email"
-          name="email"
-          type="email"
-          autoComplete="email"
-          placeholder="you@college.edu"
-          required
-          maxLength={254}
-        />
-        <label htmlFor="register-password">Password</label>
-        <input
-          id="register-password"
-          name="password"
-          type="password"
-          autoComplete="new-password"
-          placeholder="At least 8 characters"
-          required
-          minLength={8}
-          maxLength={128}
-        />
-        {error && <p className="auth-error" role="alert">{error}</p>}
-        <button className="button button-primary auth-submit" type="submit" disabled={isChecking || isSubmitting}>
-          {isSubmitting ? 'Creating account…' : 'Create account'}
-          {!isSubmitting && <ArrowRight size={16} aria-hidden="true" />}
-        </button>
-      </form>
+      {isConfirmationVisible ? (
+        <div className="auth-form">
+          <p className="auth-notice" role="status">
+            Your account is ready. We sent a verification email to {registeredEmail}. Check your inbox and click the verification link to activate your account.
+          </p>
+          <Link className="button button-primary auth-submit" to="/login">
+            Back to login
+          </Link>
+          <Link className="auth-inline-link" to="/resend-verification">Resend verification email</Link>
+        </div>
+      ) : (
+        <form className="auth-form" onSubmit={handleSubmit} noValidate>
+          <label htmlFor="register-name">Full name</label>
+          <input
+            id="register-name"
+            name="name"
+            type="text"
+            autoComplete="name"
+            placeholder="Your name"
+            required
+            maxLength={100}
+          />
+          <label htmlFor="register-email">Email address</label>
+          <input
+            id="register-email"
+            name="email"
+            type="email"
+            autoComplete="email"
+            placeholder="you@college.edu"
+            required
+            maxLength={254}
+          />
+          <label htmlFor="register-password">Password</label>
+          <input
+            id="register-password"
+            name="password"
+            type="password"
+            autoComplete="new-password"
+            placeholder="At least 8 characters"
+            required
+            minLength={8}
+            maxLength={128}
+          />
+          {error && <p className="auth-error" role="alert">{error}</p>}
+          <button className="button button-primary auth-submit" type="submit" disabled={isChecking || isSubmitting}>
+            {isSubmitting ? 'Creating account…' : 'Create account'}
+            {!isSubmitting && <ArrowRight size={16} aria-hidden="true" />}
+          </button>
+        </form>
+      )}
     </AuthPageFrame>
   )
 }

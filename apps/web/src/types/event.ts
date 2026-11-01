@@ -12,6 +12,7 @@ export interface CampusEvent {
   title: string
   date: string
   venue: string
+  ticketPricePaise?: number | null
   category: EventCategory
   price?: number
   description: string

@@ -4,8 +4,12 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { UserRole, type User } from "./generated/prisma/client.js";
 import { env } from "./env.js";
+import {
+  deliverPasswordResetLink,
+  deliverVerificationLink,
+} from "./email.js";
 
-type SafeUser = Pick<User, "id" | "name" | "email" | "role" | "createdAt" | "updatedAt">;
+type SafeUser = Pick<User, "id" | "name" | "email" | "role" | "createdAt" | "updatedAt" | "emailVerified" | "emailVerifiedAt">;
 type UserWithPassword = SafeUser & Pick<User, "passwordHash">;
 
 export interface AuthRepository {
@@ -16,6 +20,7 @@ export interface AuthRepository {
     email: string;
     passwordHash: string;
     role: UserRole;
+    emailVerified?: boolean;
   }): Promise<SafeUser>;
   storePasswordResetToken(data: {
     userId: string;
@@ -23,6 +28,12 @@ export interface AuthRepository {
     expiresInMs: number;
   }): Promise<void>;
   resetPassword(tokenHash: string, passwordHash: string): Promise<boolean>;
+  storeVerificationToken?(data: {
+    userId: string;
+    tokenHash: string;
+    expiresInMs: number;
+  }): Promise<void>;
+  consumeVerificationToken?(tokenHash: string): Promise<{ userId: string } | null>;
 }
 
 const publicUserFields = {
@@ -53,6 +64,14 @@ const requestPasswordResetSchema = z.object({
   email: z.string().trim().toLowerCase().pipe(z.email().max(254)),
 }).strict();
 
+const verifyEmailSchema = z.object({
+  token: z.string().min(1).max(256),
+}).strict();
+
+const resendVerificationSchema = z.object({
+  email: z.string().trim().toLowerCase().pipe(z.email().max(254)),
+}).strict();
+
 const resetPasswordSchema = z.object({
   token: z.string().min(1).max(256),
   password: z.string().min(8).max(128),
@@ -63,7 +82,13 @@ const genericResetRequestResponse = {
     "If an account exists for this address, password reset instructions will be sent.",
 };
 
+const genericVerificationRequestResponse = {
+  message:
+    "If an account exists and is unverified, a verification email will be sent.",
+};
+
 const passwordResetTokenLifetimeMs = 30 * 60 * 1000;
+const emailVerificationTokenLifetimeMs = 24 * 60 * 60 * 1000;
 const minimumResetRequestResponseMs = 150;
 
 interface RateLimitEntry {
@@ -90,7 +115,7 @@ function createRateLimiter(limit: number, windowMs: number, getKeys: (request: R
         "Retry-After",
         Math.max(1, Math.ceil((blockedEntry.resetAt - now) / 1000)).toString(),
       );
-      return response.status(429).json({ error: "Too many password reset attempts. Try again later." });
+      return response.status(429).json({ error: "Too many requests. Try again later." });
     }
 
     for (const key of keys) {
@@ -105,7 +130,7 @@ function createRateLimiter(limit: number, windowMs: number, getKeys: (request: R
   };
 }
 
-function hashResetToken(token: string) {
+function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
@@ -114,40 +139,6 @@ function waitUntilMinimumDuration(startedAt: number) {
   return remainingMs > 0
     ? new Promise<void>((resolve) => setTimeout(resolve, remainingMs))
     : Promise.resolve();
-}
-
-async function deliverPasswordResetLink(email: string, resetUrl: string) {
-  if (env.smtp) {
-    const nodemailer = await import("nodemailer");
-    const transporter = nodemailer.default.createTransport({
-      host: env.smtp.host,
-      port: env.smtp.port,
-      secure: env.smtp.secure,
-      auth: {
-        user: env.smtp.user,
-        pass: env.smtp.password,
-      },
-    });
-    await transporter.sendMail({
-      from: env.smtp.from,
-      to: email,
-      subject: "Reset your CampusConnect password",
-      text: `Use this link to reset your CampusConnect password. It expires in 30 minutes:\n\n${resetUrl}`,
-      html: `<p>Use this link to reset your CampusConnect password. It expires in 30 minutes:</p><p><a href="${resetUrl}">Reset password</a></p>`,
-    });
-    return;
-  }
-
-  const frontend = new URL(env.frontendOrigin);
-  if (
-    env.nodeEnv === "development" &&
-    ["localhost", "127.0.0.1", "::1"].includes(frontend.hostname)
-  ) {
-    console.info(`Local password reset URL: ${resetUrl}`);
-    return;
-  }
-
-  throw new Error("Password reset email delivery is not configured");
 }
 
 function toPublicUser(user: SafeUser) {
@@ -191,6 +182,7 @@ export function createAuthRouter(
   repository: AuthRepository,
   options: {
     deliverResetLink?: (email: string, resetUrl: string) => Promise<void>;
+    deliverVerificationLink?: (email: string, name: string, verificationUrl: string) => Promise<void>;
   } = {},
 ) {
   const router = Router();
@@ -206,6 +198,14 @@ export function createAuthRouter(
     10,
     15 * 60 * 1000,
     (request) => [`ip:${request.ip ?? "unknown"}`],
+  );
+  const verificationRequestLimiter = createRateLimiter(
+    5,
+    60 * 60 * 1000,
+    (request) => [
+      `ip:${request.ip ?? "unknown"}`,
+      `email:${typeof request.body?.email === "string" ? request.body.email.trim().toLowerCase() : ""}`,
+    ],
   );
 
   router.post("/register", async (request, response) => {
@@ -231,19 +231,104 @@ export function createAuthRouter(
         email,
         passwordHash,
         role: UserRole.STUDENT,
+        emailVerified: false,
       });
 
-      await regenerateSession(request);
-      request.session.userId = user.id;
-      await saveSession(request);
+      const verificationToken = randomBytes(32).toString("hex");
+      const verificationUrl = new URL("/verify-email", env.frontendOrigin);
+      verificationUrl.searchParams.set("token", verificationToken);
 
-      return response.status(201).json({ user: toPublicUser(user) });
+      if (repository.storeVerificationToken) {
+        await repository.storeVerificationToken({
+          userId: user.id,
+          tokenHash: hashToken(verificationToken),
+          expiresInMs: emailVerificationTokenLifetimeMs,
+        });
+      }
+
+      await (options.deliverVerificationLink ?? deliverVerificationLink)(
+        email,
+        name,
+        verificationUrl.toString(),
+      );
+
+      return response.status(201).json({
+        user: toPublicUser(user),
+        message: "Check your email to verify your account before signing in.",
+      });
     } catch (error) {
       if (isUniqueConstraintError(error)) {
         return response.status(409).json({ error: "Email already registered" });
       }
       logAuthError("registration", error);
       return serverError(response);
+    }
+  });
+
+  router.post("/verify-email", async (request, response) => {
+    const parsed = verifyEmailSchema.safeParse(request.body);
+
+    if (!parsed.success) {
+      return response.status(400).json({
+        error: "Invalid verification details",
+        details: z.treeifyError(parsed.error),
+      });
+    }
+
+    try {
+      const verificationToken = repository.consumeVerificationToken;
+      if (!verificationToken) {
+        return response.status(500).json({ error: "Authentication service unavailable" });
+      }
+
+      const result = await verificationToken(hashToken(parsed.data.token));
+      if (!result) {
+        return response.status(400).json({ error: "This verification link is invalid or has expired." });
+      }
+
+      return response.json({ message: "Email verified. You can sign in now." });
+    } catch (error) {
+      logAuthError("email verification", error);
+      return serverError(response);
+    }
+  });
+
+  router.post("/resend-verification", verificationRequestLimiter, async (request, response) => {
+    const parsed = resendVerificationSchema.safeParse(request.body);
+
+    if (!parsed.success) {
+      return response.status(400).json({
+        error: "Invalid email address",
+        details: z.treeifyError(parsed.error),
+      });
+    }
+
+    try {
+      const user = await repository.findByEmail(parsed.data.email);
+      if (user && !user.emailVerified) {
+        const verificationToken = randomBytes(32).toString("hex");
+        const verificationUrl = new URL("/verify-email", env.frontendOrigin);
+        verificationUrl.searchParams.set("token", verificationToken);
+
+        if (repository.storeVerificationToken) {
+          await repository.storeVerificationToken({
+            userId: user.id,
+            tokenHash: hashToken(verificationToken),
+            expiresInMs: emailVerificationTokenLifetimeMs,
+          });
+        }
+
+        await (options.deliverVerificationLink ?? deliverVerificationLink)(
+          parsed.data.email,
+          user.name,
+          verificationUrl.toString(),
+        );
+      }
+
+      return response.status(202).json(genericVerificationRequestResponse);
+    } catch (error) {
+      logAuthError("verification resend", error);
+      return response.status(202).json(genericVerificationRequestResponse);
     }
   });
 
@@ -264,6 +349,10 @@ export function createAuthRouter(
 
       if (!user || !(await argon2.verify(user.passwordHash, password))) {
         return response.status(401).json({ error: "Invalid email or password" });
+      }
+
+      if (!user.emailVerified) {
+        return response.status(403).json({ error: "EMAIL_NOT_VERIFIED" });
       }
 
       await regenerateSession(request);
@@ -293,7 +382,7 @@ export function createAuthRouter(
         const token = randomBytes(32).toString("hex");
         await repository.storePasswordResetToken({
           userId: user.id,
-          tokenHash: hashResetToken(token),
+          tokenHash: hashToken(token),
           expiresInMs: passwordResetTokenLifetimeMs,
         });
         const resetUrl = new URL("/reset-password", env.frontendOrigin);
@@ -325,7 +414,7 @@ export function createAuthRouter(
     try {
       const passwordHash = await argon2.hash(parsed.data.password);
       const reset = await repository.resetPassword(
-        hashResetToken(parsed.data.token),
+        hashToken(parsed.data.token),
         passwordHash,
       );
       if (!reset) {

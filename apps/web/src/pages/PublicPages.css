@@ -700,6 +700,32 @@
   margin: 0;
 }
 
+.event-venue-map {
+  margin-top: 28px;
+}
+
+.event-venue-map h2 {
+  margin: 0 0 12px;
+  color: var(--navy);
+  font-size: 17px;
+}
+
+.event-directions-link {
+  width: fit-content;
+  margin-top: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--violet);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.event-directions-link:hover {
+  text-decoration: underline;
+}
+
 .public-state {
   min-height: 380px;
   padding: 30px;

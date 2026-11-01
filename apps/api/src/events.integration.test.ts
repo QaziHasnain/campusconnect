@@ -22,13 +22,14 @@ describe.skipIf(!runDatabaseIntegrationTests)("Registration API with PostgreSQL"
   let secondStudentId: string;
   const eventIds: string[] = [];
   const userIds: string[] = [];
+  let latestVerificationUrl: string | null = null;
 
   beforeAll(async () => {
     const databaseUrl = new URL(env.databaseUrl);
     const localHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
     const configuredDatabase = decodeURIComponent(databaseUrl.pathname.slice(1));
-    if (!localHosts.has(databaseUrl.hostname) || configuredDatabase !== "CampusConnect") {
-      throw new Error("Registration integration tests require the local CampusConnect database");
+    if (!localHosts.has(databaseUrl.hostname) || configuredDatabase !== "campusconnect_test") {
+      throw new Error("Registration integration tests require the dedicated local campusconnect_test database");
     }
 
     const [appModule, prismaModule, databaseModule] = await Promise.all([
@@ -41,14 +42,21 @@ describe.skipIf(!runDatabaseIntegrationTests)("Registration API with PostgreSQL"
     const identity = await pool.query<{ database_name: string }>(
       "SELECT current_database() AS database_name",
     );
-    if (identity.rows[0]?.database_name !== "CampusConnect") {
-      throw new Error("Connected database is not CampusConnect");
+    if (identity.rows[0]?.database_name !== "campusconnect_test") {
+      throw new Error("Connected database is not campusconnect_test");
     }
 
-    app = appModule.createApp({ sessionStore: new MemoryStore() });
+    app = appModule.createApp({
+      sessionStore: new MemoryStore(),
+      authRouterOptions: {
+        deliverVerificationLink: async (_email, _name, verificationUrl) => {
+          latestVerificationUrl = verificationUrl;
+        },
+      },
+    });
     const createAccount = async (name: string, role: "STUDENT" | "ORGANIZER") => {
       const agent = request.agent(app);
-      const email = `${integrationEmailPrefix}-${role}-${name}@example.test`;
+      const email = `${integrationEmailPrefix}-${role}-${name}@example.test`.toLowerCase();
       let userId: string;
       if (role === "ORGANIZER") {
         const account = await prisma.user.create({
@@ -57,12 +65,15 @@ describe.skipIf(!runDatabaseIntegrationTests)("Registration API with PostgreSQL"
             email,
             passwordHash: await argon2.hash(integrationPassword),
             role: "ORGANIZER",
+            emailVerified: true,
+            emailVerifiedAt: new Date(),
           },
           select: { id: true },
         });
         userId = account.id;
         userIds.push(userId);
       } else {
+        latestVerificationUrl = null;
         const response = await agent.post("/api/auth/register").send({
           name,
           email,
@@ -73,16 +84,27 @@ describe.skipIf(!runDatabaseIntegrationTests)("Registration API with PostgreSQL"
         }
         userId = response.body.user.id as string;
         userIds.push(userId);
+        if (!latestVerificationUrl) {
+          throw new Error("Could not capture registration verification link");
+        }
+        const verificationToken = new URL(latestVerificationUrl).searchParams.get("token");
+        if (!verificationToken) {
+          throw new Error("Registration verification link did not contain a token");
+        }
+        const verification = await agent.post("/api/auth/verify-email").send({
+          token: verificationToken,
+        });
+        if (verification.status !== 200) {
+          throw new Error("Could not verify registration integration student account");
+        }
       }
 
-      if (role === "ORGANIZER") {
-        const login = await agent.post("/api/auth/login").send({
-          email,
-          password: integrationPassword,
-        });
-        if (login.status !== 200) {
-          throw new Error("Could not sign in registration integration organizer account");
-        }
+      const login = await agent.post("/api/auth/login").send({
+        email,
+        password: integrationPassword,
+      });
+      if (login.status !== 200) {
+        throw new Error(`Could not sign in registration integration ${role} account`);
       }
       return { agent, id: userId };
     };

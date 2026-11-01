@@ -12,8 +12,27 @@ import {
   type EventRepository,
 } from "./events.js";
 import { env } from "./env.js";
+import {
+  createPrismaWhatsAppPreferencesRepository,
+  createWhatsAppPreferencesRouter,
+  type WhatsAppPreferencesRepository,
+} from "./whatsappPreferences.js";
+import {
+  createNotificationRouter,
+  createPrismaNotificationRepository,
+  type NotificationRepository,
+} from "./notifications.js";
 import { pool } from "./db.js";
 import { prisma } from "./prisma.js";
+import {
+  createPaymentRouter,
+  createPrismaPaymentRepository,
+  createRazorpayGateway,
+  getPaymentConfiguration,
+  type PaymentConfiguration,
+  type PaymentGateway,
+  type PaymentRepository,
+} from "./payments.js";
 
 const PgSessionStore = connectPgSimple(session);
 
@@ -22,6 +41,8 @@ const publicUserFields = {
   name: true,
   email: true,
   role: true,
+  emailVerified: true,
+  emailVerifiedAt: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -36,6 +57,8 @@ const authRepository: AuthRepository = {
         email: true,
         role: true,
         passwordHash: true,
+        emailVerified: true,
+        emailVerifiedAt: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -48,11 +71,19 @@ const authRepository: AuthRepository = {
         name: true,
         email: true,
         role: true,
+        emailVerified: true,
+        emailVerifiedAt: true,
         createdAt: true,
         updatedAt: true,
       },
     }),
-  create: (data) => prisma.user.create({ data, select: publicUserFields }),
+  create: (data) => prisma.user.create({
+    data: {
+      ...data,
+      emailVerified: data.emailVerified ?? false,
+    },
+    select: publicUserFields,
+  }),
   storePasswordResetToken: async (data) => {
     await prisma.$transaction(async (transaction) => {
       await transaction.passwordResetToken.deleteMany({ where: { userId: data.userId } });
@@ -91,12 +122,53 @@ const authRepository: AuthRepository = {
 
       return true;
     }),
+  storeVerificationToken: async (data) => {
+    await prisma.$transaction(async (transaction) => {
+      await transaction.emailVerificationToken.deleteMany({ where: { userId: data.userId } });
+      await transaction.emailVerificationToken.create({
+        data: {
+          id: randomUUID(),
+          userId: data.userId,
+          tokenHash: data.tokenHash,
+          expiresAt: new Date(Date.now() + data.expiresInMs),
+        },
+      });
+    });
+  },
+  consumeVerificationToken: (tokenHash) =>
+    prisma.$transaction(async (transaction) => {
+      const [token] = await transaction.$queryRaw<{ userId: string }[]>`
+        DELETE FROM "EmailVerificationToken"
+        WHERE "tokenHash" = ${tokenHash}
+          AND "expiresAt" > clock_timestamp()
+        RETURNING "userId"
+      `;
+      if (!token) return null;
+
+      await transaction.user.update({
+        where: { id: token.userId },
+        data: {
+          emailVerified: true,
+          emailVerifiedAt: new Date(),
+        },
+      });
+      await transaction.emailVerificationToken.deleteMany({
+        where: { userId: token.userId },
+      });
+
+      return { userId: token.userId };
+    }),
 };
 
 export function createApp(options: {
   authRepository?: AuthRepository;
   authRouterOptions?: Parameters<typeof createAuthRouter>[1];
   eventRepository?: EventRepository;
+  whatsappPreferencesRepository?: WhatsAppPreferencesRepository;
+  notificationRepository?: NotificationRepository;
+  paymentRepository?: PaymentRepository;
+  paymentGateway?: PaymentGateway | null;
+  paymentConfiguration?: PaymentConfiguration;
   sessionStore?: Store;
 } = {}) {
   const app = express();
@@ -108,6 +180,13 @@ export function createApp(options: {
     });
   const eventRepository =
     options.eventRepository ?? createPrismaEventRepository(prisma);
+  const paymentConfiguration =
+    options.paymentConfiguration ?? getPaymentConfiguration(env.razorpay);
+  const paymentRepository =
+    options.paymentRepository ?? createPrismaPaymentRepository(prisma);
+  const paymentGateway =
+    options.paymentGateway ??
+    createRazorpayGateway(paymentConfiguration, paymentConfiguration.keySecret);
 
   app.use(helmet());
   app.use(
@@ -116,8 +195,6 @@ export function createApp(options: {
       credentials: true,
     }),
   );
-  app.use(express.json());
-
   app.get("/api/health", (_request, response) => {
     response.json({ status: "ok" });
   });
@@ -139,6 +216,11 @@ export function createApp(options: {
     }),
   );
   app.use(
+    "/api/payments",
+    createPaymentRouter(paymentRepository, paymentGateway, paymentConfiguration),
+  );
+  app.use(express.json());
+  app.use(
     "/api/auth",
     createAuthRouter(options.authRepository ?? authRepository, options.authRouterOptions),
   );
@@ -147,6 +229,20 @@ export function createApp(options: {
     createEventRouter(eventRepository),
   );
   app.use("/api/me", createMeRouter(eventRepository));
+  app.use(
+    "/api/me/notifications",
+    createNotificationRouter(
+      options.notificationRepository ?? createPrismaNotificationRepository(prisma),
+      env.push,
+    ),
+  );
+  app.use(
+    "/api/me/whatsapp",
+    createWhatsAppPreferencesRouter(
+      options.whatsappPreferencesRepository ??
+        createPrismaWhatsAppPreferencesRepository(prisma),
+    ),
+  );
   app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
     if (response.headersSent) {
       return next(error);
@@ -160,7 +256,13 @@ export function createApp(options: {
       return response.status(413).json({ error: "Request body is too large" });
     }
 
-    console.error("API request failed", error);
+    if (_request.path.startsWith("/api/me/whatsapp")) {
+      console.error("WhatsApp preference request failed");
+    } else if (_request.path.startsWith("/api/me/notifications")) {
+      console.error("Notification request failed");
+    } else {
+      console.error("API request failed", error);
+    }
     return response.status(500).json({ error: "Internal server error" });
   });
 

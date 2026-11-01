@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { EventCard } from '../components/EventCard'
+import { WhatsAppPreferences } from './WhatsAppPreferences'
 import {
   ApiError,
   getMyRegistrations,
@@ -68,6 +69,8 @@ export function MyRegistrationsPage() {
           <p className="registrations-description">
             Events you have registered for with this student account.
           </p>
+
+          {!isChecking && user?.role === 'STUDENT' && <WhatsAppPreferences />}
 
           {isChecking ? (
             <div className="empty-state" role="status">Checking your sign-in status…</div>
