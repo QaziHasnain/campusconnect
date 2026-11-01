@@ -6,6 +6,7 @@ coverage/
 .env.*
 !.env.example
 !.env.*.example
+.demo-credentials.local.json
 apps/api/src/generated/
 *.log
 .DS_Store

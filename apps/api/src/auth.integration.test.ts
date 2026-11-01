@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { env } from "./env.js";
 
 const runDatabaseIntegrationTests = process.env.RUN_DB_INTEGRATION_TESTS === "true";
 
@@ -10,18 +11,41 @@ describe.skipIf(!runDatabaseIntegrationTests)("Auth API with PostgreSQL", () => 
   const password = "integration-test-password";
 
   beforeAll(async () => {
+    const databaseUrl = new URL(env.databaseUrl);
+    const localHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+    const configuredDatabase = decodeURIComponent(databaseUrl.pathname.slice(1));
+    if (!localHosts.has(databaseUrl.hostname) || configuredDatabase !== "CampusConnect") {
+      throw new Error("Authentication integration tests require the local CampusConnect database");
+    }
+
     [{ app }, { prisma }, { pool }] = await Promise.all([
       import("./app.js"),
       import("./prisma.js"),
       import("./db.js"),
     ]);
+    const identity = await pool.query<{ database_name: string }>(
+      "SELECT current_database() AS database_name",
+    );
+    if (identity.rows[0]?.database_name !== "CampusConnect") {
+      throw new Error("Connected database is not CampusConnect");
+    }
   });
 
   afterAll(async () => {
     if (prisma && pool) {
-      await prisma.user.deleteMany({ where: { email } });
-      await prisma.$disconnect();
-      await pool.end();
+      try {
+        const user = await prisma.user.findUnique({
+          where: { email },
+          select: { id: true },
+        });
+        if (user) {
+          await pool.query(`DELETE FROM "session" WHERE sess ->> 'userId' = $1`, [user.id]);
+          await prisma.user.deleteMany({ where: { id: user.id, email } });
+        }
+      } finally {
+        await prisma.$disconnect();
+        await pool.end();
+      }
     }
   });
 
@@ -32,7 +56,6 @@ describe.skipIf(!runDatabaseIntegrationTests)("Auth API with PostgreSQL", () => 
       name: "Integration User",
       email,
       password,
-      role: "STUDENT",
     });
 
     expect(registration.status).toBe(201);

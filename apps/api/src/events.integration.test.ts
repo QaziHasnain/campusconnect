@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import argon2 from "argon2";
 import { MemoryStore } from "express-session";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -47,17 +48,43 @@ describe.skipIf(!runDatabaseIntegrationTests)("Registration API with PostgreSQL"
     app = appModule.createApp({ sessionStore: new MemoryStore() });
     const createAccount = async (name: string, role: "STUDENT" | "ORGANIZER") => {
       const agent = request.agent(app);
-      const response = await agent.post("/api/auth/register").send({
-        name,
-        email: `${integrationEmailPrefix}-${role}-${name}@example.test`,
-        password: integrationPassword,
-        role,
-      });
-      if (response.status !== 201 || typeof response.body.user?.id !== "string") {
-        throw new Error(`Could not create registration integration ${role} account`);
+      const email = `${integrationEmailPrefix}-${role}-${name}@example.test`;
+      let userId: string;
+      if (role === "ORGANIZER") {
+        const account = await prisma.user.create({
+          data: {
+            name,
+            email,
+            passwordHash: await argon2.hash(integrationPassword),
+            role: "ORGANIZER",
+          },
+          select: { id: true },
+        });
+        userId = account.id;
+        userIds.push(userId);
+      } else {
+        const response = await agent.post("/api/auth/register").send({
+          name,
+          email,
+          password: integrationPassword,
+        });
+        if (response.status !== 201 || typeof response.body.user?.id !== "string") {
+          throw new Error(`Could not create registration integration ${role} account`);
+        }
+        userId = response.body.user.id as string;
+        userIds.push(userId);
       }
-      userIds.push(response.body.user.id);
-      return { agent, id: response.body.user.id as string };
+
+      if (role === "ORGANIZER") {
+        const login = await agent.post("/api/auth/login").send({
+          email,
+          password: integrationPassword,
+        });
+        if (login.status !== 200) {
+          throw new Error("Could not sign in registration integration organizer account");
+        }
+      }
+      return { agent, id: userId };
     };
 
     const [organizerAccount, studentAccount, secondStudentAccount] = await Promise.all([

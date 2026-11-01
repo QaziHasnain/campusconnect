@@ -55,6 +55,15 @@ export async function apiRequest<T>(
     throw new ApiError(response.status, message)
   }
 
+  if (response.status === 204) {
+    const parsed = schema.safeParse(undefined)
+    if (!parsed.success) {
+      throw new ApiError(response.status, `API returned an invalid response (${response.status})`)
+    }
+
+    return parsed.data
+  }
+
   let data: unknown
   try {
     data = JSON.parse(await response.text())
@@ -105,6 +114,10 @@ export const apiEventSchema = z.object({
 
 export const eventListResponseSchema = z.object({
   events: z.array(apiEventSchema),
+})
+
+export const eventResponseSchema = z.object({
+  event: apiEventSchema,
 })
 
 export const myRegistrationsResponseSchema = z.object({
@@ -179,6 +192,14 @@ export function registerForEvent(eventId: string) {
 
 export function getMyRegistrations() {
   return apiRequest('/api/me/registrations', myRegistrationsResponseSchema)
+}
+
+export function deleteOrganizerEvent(eventId: string) {
+  return apiRequest(
+    `/api/events/${encodeURIComponent(eventId)}`,
+    z.undefined(),
+    { method: 'DELETE' },
+  )
 }
 
 export function requestPasswordReset(email: string) {

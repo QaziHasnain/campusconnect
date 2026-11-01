@@ -3,9 +3,12 @@ import {
   ArrowDown,
   ArrowRight,
   CalendarDays,
+  Check,
+  CircleHelp,
   MapPin,
   Search,
   Sparkles,
+  UsersRound,
 } from 'lucide-react'
 import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './auth/AuthContext'
@@ -25,10 +28,31 @@ import { toApiCategory, toCampusEvent } from './lib/events'
 import type { CampusEvent } from './types/event'
 import type { EventCategory } from './types/event'
 import { MyRegistrationsPage } from './pages/MyRegistrationsPage'
+import { OrganizerDashboard } from './pages/OrganizerDashboard'
+import { OrganizerEventForm } from './pages/OrganizerEventForm'
+import { SiteLayout } from './components/SiteLayout'
+import {
+  AboutPage,
+  EventDetailsPage,
+  FaqPage,
+  HowItWorksPage,
+} from './pages/PublicPages'
+import type { ReactNode } from 'react'
 import './App.css'
 
+function OrganizerRoute({ children }: { children: ReactNode }) {
+  const { user, isChecking } = useAuth()
+
+  if (isChecking) {
+    return <p className="route-status" role="status">Checking your sign-in status…</p>
+  }
+  if (!user) return <Navigate to="/login" replace />
+  if (user.role !== 'ORGANIZER') return <Navigate to="/" replace />
+  return children
+}
+
 function LandingPage() {
-  const { user, initializationError, logout } = useAuth()
+  const { initializationError } = useAuth()
   const [events, setEvents] = useState<CampusEvent[]>([])
   const [isLoadingEvents, setIsLoadingEvents] = useState(true)
   const [eventsError, setEventsError] = useState<string | null>(null)
@@ -36,8 +60,6 @@ function LandingPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<EventCategory | 'All'>('All')
-  const [logoutError, setLogoutError] = useState<string | null>(null)
-  const [isLoggingOut, setIsLoggingOut] = useState(false)
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300)
@@ -129,65 +151,10 @@ function LandingPage() {
     setRetryEvents((attempt) => attempt + 1)
   }
 
-  async function handleLogout() {
-    setLogoutError(null)
-    setIsLoggingOut(true)
-    try {
-      await logout()
-    } catch (error) {
-      setLogoutError(
-        error instanceof ApiError && error.status >= 500
-          ? 'The service is temporarily unavailable. Please try again.'
-          : 'Unable to sign out. Please check your connection and try again.',
-      )
-    } finally {
-      setIsLoggingOut(false)
-    }
-  }
-
   return (
-    <div className="site-shell" id="top">
-      <header className="site-header">
-        <a className="brand" href="#top" aria-label="CampusConnect home">
-          <span className="brand-mark">
-            <CalendarDays size={20} strokeWidth={2.2} aria-hidden="true" />
-          </span>
-          <span>campus<span className="brand-accent">connect</span></span>
-        </a>
-        <nav className="main-nav" aria-label="Main navigation">
-          <a href="#events">Events</a>
-          <a href="#about">About</a>
-          {user?.role === 'STUDENT' && <Link to="/registrations">My registrations</Link>}
-          {user ? (
-            <span className="signed-in-label">
-              Hi, {user.name} · {user.role === 'ORGANIZER' ? 'Organizer' : 'Student'}
-            </span>
-          ) : (
-            <Link to="/login">Login</Link>
-          )}
-        </nav>
-        {user ? (
-          <button
-            className="button button-primary header-cta"
-            type="button"
-            onClick={() => void handleLogout()}
-            disabled={isLoggingOut}
-          >
-            {isLoggingOut ? 'Signing out…' : 'Log out'}
-          </button>
-        ) : (
-          <Link className="button button-primary header-cta" to="/register">
-            Get Started <ArrowRight size={16} aria-hidden="true" />
-          </Link>
-        )}
-      </header>
-
       <main>
         {initializationError && (
           <p className="session-notice" role="alert">{initializationError}</p>
-        )}
-        {logoutError && (
-          <p className="session-notice" role="alert">{logoutError}</p>
         )}
         <section className="hero-section" aria-labelledby="hero-title">
           <div className="hero-copy">
@@ -231,13 +198,11 @@ function LandingPage() {
               </button>
             </form>
             <div className="hero-proof">
-              <div className="avatar-stack" aria-hidden="true">
-                <span>J</span>
-                <span>M</span>
-                <span>A</span>
-                <span>+</span>
-              </div>
               <p><strong>Good things happen together.</strong> Find your next thing.</p>
+            </div>
+            <div className="hero-secondary-actions">
+              <Link to="/how-it-works">See how it works <ArrowRight size={15} aria-hidden="true" /></Link>
+              <Link to="/about">About CampusConnect</Link>
             </div>
           </div>
 
@@ -400,54 +365,57 @@ function LandingPage() {
           </section>
         )}
 
-        <section className="community-section section-wrap" id="about" aria-labelledby="community-title">
-          <div className="community-mark" aria-hidden="true">
-            <CalendarDays size={29} strokeWidth={1.7} />
+        <section className="home-feature-section section-wrap" aria-labelledby="features-title">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow section-eyebrow">MADE FOR CAMPUS LIFE</span>
+              <h2 id="features-title">Everything starts with showing up.</h2>
+              <p>Simple tools to discover events, join in, and bring campus ideas to life.</p>
+            </div>
+            <Link className="text-button" to="/about">About the platform <ArrowRight size={15} aria-hidden="true" /></Link>
           </div>
+          <div className="home-feature-grid">
+            <article><span><Search size={20} aria-hidden="true" /></span><h3>Find your next thing</h3><p>Explore published campus events by category, name, or venue.</p></article>
+            <article><span><Check size={20} aria-hidden="true" /></span><h3>Make a plan</h3><p>Register for events and revisit them from your student account.</p></article>
+            <article><span><CalendarDays size={20} aria-hidden="true" /></span><h3>Organize with clarity</h3><p>Authorized organizers can draft, update, and publish the events they own.</p></article>
+          </div>
+        </section>
+
+        <section className="home-how-section" aria-labelledby="home-how-title">
+          <div className="section-wrap home-how-inner">
+            <div>
+              <span className="eyebrow section-eyebrow">A FEW SIMPLE STEPS</span>
+              <h2 id="home-how-title">From discovery to the day of the event.</h2>
+              <p>Students browse and register. Authorized organizers create and manage events.</p>
+              <Link className="button button-primary" to="/how-it-works">See how it works <ArrowRight size={16} aria-hidden="true" /></Link>
+            </div>
+            <ol className="home-how-steps">
+              <li><span>01</span>Explore published events</li>
+              <li><span>02</span>Open the event details</li>
+              <li><span>03</span>Register and keep it in your plans</li>
+            </ol>
+          </div>
+        </section>
+
+        <section className="home-about-section section-wrap" aria-labelledby="home-about-title">
+          <div className="community-mark" aria-hidden="true"><UsersRound size={27} /></div>
           <div>
             <span className="eyebrow section-eyebrow">CAMPUS LIFE, CONNECTED</span>
-            <h2 id="community-title">Your next story starts here.</h2>
-            <p>One campus, a hundred ways to show up. Find the ones that feel like you.</p>
+            <h2 id="home-about-title">Your next story starts here.</h2>
+            <p>CampusConnect gives students and organizers one shared place for campus events.</p>
           </div>
-          <a className="button button-primary" href="#events">
-            Find your event <ArrowRight size={16} aria-hidden="true" />
-          </a>
+          <Link className="button button-primary" to="/about">Our story <ArrowRight size={16} aria-hidden="true" /></Link>
+        </section>
+
+        <section className="home-faq-section section-wrap" aria-labelledby="home-faq-title">
+          <div>
+            <span className="eyebrow section-eyebrow">NEED A HAND?</span>
+            <h2 id="home-faq-title">Questions before you join in?</h2>
+            <p>Find answers about accounts, registration, capacity, and organizer access.</p>
+          </div>
+          <Link className="text-button" to="/faq">Visit help and FAQs <CircleHelp size={17} aria-hidden="true" /></Link>
         </section>
       </main>
-
-      <footer className="site-footer" id="footer">
-        <div className="footer-main">
-          <a className="brand footer-brand" href="#top">
-            <span className="brand-mark">
-              <CalendarDays size={19} strokeWidth={2.2} aria-hidden="true" />
-            </span>
-            <span>campus<span className="brand-accent">connect</span></span>
-          </a>
-          <p>Campus life, brought a little closer.</p>
-          <nav className="footer-links" aria-label="Footer navigation">
-            <a href="#events">Explore events</a>
-            <a href="#about">About us</a>
-            {user?.role === 'STUDENT' && <Link to="/registrations">My registrations</Link>}
-            {user ? (
-              <button
-                className="footer-logout"
-                type="button"
-                onClick={() => void handleLogout()}
-                disabled={isLoggingOut}
-              >
-                Log out
-              </button>
-            ) : (
-              <Link to="/login">Login</Link>
-            )}
-          </nav>
-        </div>
-        <div className="footer-bottom">
-          <span>© 2026 CampusConnect. Made for campus life.</span>
-          <span>Find your community on campus.</span>
-        </div>
-      </footer>
-    </div>
   )
 }
 
@@ -455,15 +423,33 @@ function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<LandingPage />} />
-          <Route path="/registrations" element={<MyRegistrationsPage />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegistrationPage />} />
-          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-          <Route path="/reset-password" element={<ResetPasswordPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <SiteLayout>
+          <Routes>
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/about" element={<AboutPage />} />
+            <Route path="/how-it-works" element={<HowItWorksPage />} />
+            <Route path="/faq" element={<FaqPage />} />
+            <Route path="/events/:eventId" element={<EventDetailsPage />} />
+            <Route path="/registrations" element={<MyRegistrationsPage />} />
+            <Route
+              path="/organizer"
+              element={<OrganizerRoute><OrganizerDashboard /></OrganizerRoute>}
+            />
+            <Route
+              path="/organizer/events/new"
+              element={<OrganizerRoute><OrganizerEventForm /></OrganizerRoute>}
+            />
+            <Route
+              path="/organizer/events/:eventId/edit"
+              element={<OrganizerRoute><OrganizerEventForm /></OrganizerRoute>}
+            />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegistrationPage />} />
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </SiteLayout>
       </BrowserRouter>
     </AuthProvider>
   )

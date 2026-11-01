@@ -1,5 +1,6 @@
 import connectPgSimple from "connect-pg-simple";
 import cors from "cors";
+import { randomUUID } from "node:crypto";
 import express from "express";
 import session, { type Store } from "express-session";
 import helmet from "helmet";
@@ -53,23 +54,29 @@ const authRepository: AuthRepository = {
     }),
   create: (data) => prisma.user.create({ data, select: publicUserFields }),
   storePasswordResetToken: async (data) => {
-    await prisma.$transaction([
-      prisma.passwordResetToken.deleteMany({ where: { userId: data.userId } }),
-      prisma.passwordResetToken.create({ data }),
-    ]);
+    await prisma.$transaction(async (transaction) => {
+      await transaction.passwordResetToken.deleteMany({ where: { userId: data.userId } });
+      await transaction.$executeRaw`
+        INSERT INTO "PasswordResetToken" ("id", "userId", "tokenHash", "expiresAt", "createdAt")
+        VALUES (
+          ${randomUUID()},
+          ${data.userId},
+          ${data.tokenHash},
+          clock_timestamp() + (${data.expiresInMs} * INTERVAL '1 millisecond'),
+          clock_timestamp()
+        )
+      `;
+    });
   },
-  resetPassword: (tokenHash, passwordHash, now) =>
+  resetPassword: (tokenHash, passwordHash) =>
     prisma.$transaction(async (transaction) => {
-      const resetToken = await transaction.passwordResetToken.findUnique({
-        where: { tokenHash },
-        select: { id: true, userId: true, expiresAt: true },
-      });
+      const [resetToken] = await transaction.$queryRaw<{ userId: string }[]>`
+        DELETE FROM "PasswordResetToken"
+        WHERE "tokenHash" = ${tokenHash}
+          AND "expiresAt" > clock_timestamp()
+        RETURNING "userId"
+      `;
       if (!resetToken) return false;
-
-      const consumed = await transaction.passwordResetToken.deleteMany({
-        where: { id: resetToken.id, expiresAt: { gt: now } },
-      });
-      if (consumed.count !== 1) return false;
 
       await transaction.user.update({
         where: { id: resetToken.userId },

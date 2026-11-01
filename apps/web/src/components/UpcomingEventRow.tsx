@@ -1,4 +1,5 @@
 import { MapPin } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import type { CampusEvent } from '../types/event'
 import { formatEventDay, formatEventMonth } from '../lib/eventFormatting'
 import { EventRegistrationControl } from './EventRegistrationControl'
@@ -18,7 +19,7 @@ export function UpcomingEventRow({ event, index }: UpcomingEventRowProps) {
       </div>
       <div className="upcoming-details">
         <span className="upcoming-category">{event.category}</span>
-        <h3>{event.title}</h3>
+        <h3><Link to={`/events/${encodeURIComponent(event.id)}`}>{event.title}</Link></h3>
         <p>{event.description}</p>
       </div>
       <span className="upcoming-venue">
@@ -26,6 +27,7 @@ export function UpcomingEventRow({ event, index }: UpcomingEventRowProps) {
         {event.venue}
       </span>
       <span className="upcoming-organizer">{event.organizerName}</span>
+      <Link className="upcoming-details-link" to={`/events/${encodeURIComponent(event.id)}`}>Details</Link>
       <EventRegistrationControl eventId={event.id} eventTitle={event.title} compact />
     </article>
   )

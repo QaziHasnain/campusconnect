@@ -22,6 +22,7 @@ process.env.FRONTEND_ORIGIN = "http://localhost:5173";
 const users = new Map<string, User>();
 const events = new Map<string, EventRecord>();
 const registrations = new Map<string, RegistrationRecord>();
+const deletionBlockedEventIds = new Set<string>();
 let app: import("express").Express;
 let organizer: ReturnType<typeof request.agent>;
 let otherOrganizer: ReturnType<typeof request.agent>;
@@ -69,6 +70,11 @@ const eventRepository: EventRepository = {
         const searchable = `${event.title} ${event.description} ${event.venue}`.toLowerCase();
         return searchable.includes(filters.search.toLowerCase());
       })
+      .sort((first, second) => first.startAt.getTime() - second.startAt.getTime());
+  },
+  async listOwned(ownerId) {
+    return [...events.values()]
+      .filter((event) => event.organizerId === ownerId)
       .sort((first, second) => first.startAt.getTime() - second.startAt.getTime());
   },
   async findPublishedById(id) {
@@ -140,6 +146,7 @@ const eventRepository: EventRepository = {
     return updated;
   },
   async deleteOwned(id, ownerId) {
+    if (deletionBlockedEventIds.has(id)) throw { code: "P2003" };
     const event = events.get(id);
     if (!event || event.organizerId !== ownerId) return false;
     events.delete(id);
@@ -157,14 +164,29 @@ beforeAll(async () => {
 
   async function register(name: string, role: "STUDENT" | "ORGANIZER") {
     const agent = request.agent(app);
-    const result = await agent.post("/api/auth/register").send({
+    const email = `${name.toLowerCase().replaceAll(" ", ".")}-${Date.now()}@example.com`;
+    if (role === "STUDENT") {
+      const result = await agent.post("/api/auth/register").send({
+        name,
+        email,
+        password: "event-test-password",
+      });
+      expect(result.status).toBe(201);
+      return { agent, id: result.body.user.id as string };
+    }
+
+    const argon2 = (await import("argon2")).default;
+    const user = await authRepository.create({
       name,
-      email: `${name.toLowerCase().replaceAll(" ", ".")}-${Date.now()}@example.com`,
-      password: "event-test-password",
-      role,
+      email,
+      passwordHash: await argon2.hash("event-test-password"),
+      role: UserRole.ORGANIZER,
     });
-    expect(result.status).toBe(201);
-    return { agent, id: result.body.user.id as string };
+    const login = await agent
+      .post("/api/auth/login")
+      .send({ email, password: "event-test-password" });
+    expect(login.status).toBe(200);
+    return { agent, id: user.id };
   }
 
   const organizerAccount = await register("Event Organizer", "ORGANIZER");
@@ -184,10 +206,12 @@ beforeAll(async () => {
 beforeEach(() => {
   events.clear();
   registrations.clear();
+  deletionBlockedEventIds.clear();
 });
 afterEach(() => {
   events.clear();
   registrations.clear();
+  deletionBlockedEventIds.clear();
 });
 
 function seedEvent({
@@ -237,6 +261,24 @@ const validEvent = {
 };
 
 describe("Event API", () => {
+  it("lists only the signed-in organizer's events, including drafts", async () => {
+    seedEvent({ id: "organizer-draft", status: EventStatus.DRAFT });
+    seedEvent({ id: "organizer-published" });
+    seedEvent({ id: "other-organizer", ownerId: otherOrganizerId });
+
+    expect((await request(app).get("/api/events/mine")).status).toBe(401);
+    expect((await student.get("/api/events/mine")).status).toBe(403);
+
+    const response = await organizer.get("/api/events/mine");
+    expect(response.status).toBe(200);
+    expect(response.body.events.map((event: { id: string }) => event.id)).toEqual([
+      "organizer-draft",
+      "organizer-published",
+    ]);
+    expect(response.body.events[0].status).toBe("DRAFT");
+    expect(response.body.events[0]).not.toHaveProperty("organizerId");
+  });
+
   it("lists published events only, with filters, ascending dates, and organizer display name", async () => {
     seedEvent({ id: "later", startAt: new Date("2026-11-20T10:00:00.000Z") });
     seedEvent({ id: "earlier", startAt: new Date("2026-11-10T10:00:00.000Z") });
@@ -366,6 +408,16 @@ describe("Event API", () => {
       404,
     );
     expect((await organizer.delete("/api/events/missing")).status).toBe(404);
+  });
+
+  it("explains when registrations prevent deleting an event", async () => {
+    seedEvent({ id: "event-with-registrations" });
+    deletionBlockedEventIds.add("event-with-registrations");
+
+    const response = await organizer.delete("/api/events/event-with-registrations");
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({ error: "Events with registrations cannot be deleted" });
   });
 
   it("requires an authenticated student to register and check registration status", async () => {

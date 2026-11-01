@@ -20,9 +20,9 @@ export interface AuthRepository {
   storePasswordResetToken(data: {
     userId: string;
     tokenHash: string;
-    expiresAt: Date;
+    expiresInMs: number;
   }): Promise<void>;
-  resetPassword(tokenHash: string, passwordHash: string, now: Date): Promise<boolean>;
+  resetPassword(tokenHash: string, passwordHash: string): Promise<boolean>;
 }
 
 const publicUserFields = {
@@ -39,7 +39,6 @@ const registerSchema = z
     name: z.string().trim().min(1).max(100),
     email: z.string().trim().toLowerCase().pipe(z.email().max(254)),
     password: z.string().min(8).max(128),
-    role: z.enum([UserRole.STUDENT, UserRole.ORGANIZER]).default(UserRole.STUDENT),
   })
   .strict();
 
@@ -61,7 +60,7 @@ const resetPasswordSchema = z.object({
 
 const genericResetRequestResponse = {
   message:
-    "If an account exists for this address, a password reset link is available. In local development, check the API server console.",
+    "If an account exists for this address, password reset instructions will be sent.",
 };
 
 const passwordResetTokenLifetimeMs = 30 * 60 * 1000;
@@ -117,12 +116,38 @@ function waitUntilMinimumDuration(startedAt: number) {
     : Promise.resolve();
 }
 
-async function deliverPasswordResetLink(_email: string, resetUrl: string) {
-  if (env.nodeEnv === "development") {
-    console.info(`Local password reset URL: ${resetUrl}`);
-  } else {
-    console.info("Password reset delivery is not configured for this environment.");
+async function deliverPasswordResetLink(email: string, resetUrl: string) {
+  if (env.smtp) {
+    const nodemailer = await import("nodemailer");
+    const transporter = nodemailer.default.createTransport({
+      host: env.smtp.host,
+      port: env.smtp.port,
+      secure: env.smtp.secure,
+      auth: {
+        user: env.smtp.user,
+        pass: env.smtp.password,
+      },
+    });
+    await transporter.sendMail({
+      from: env.smtp.from,
+      to: email,
+      subject: "Reset your CampusConnect password",
+      text: `Use this link to reset your CampusConnect password. It expires in 30 minutes:\n\n${resetUrl}`,
+      html: `<p>Use this link to reset your CampusConnect password. It expires in 30 minutes:</p><p><a href="${resetUrl}">Reset password</a></p>`,
+    });
+    return;
   }
+
+  const frontend = new URL(env.frontendOrigin);
+  if (
+    env.nodeEnv === "development" &&
+    ["localhost", "127.0.0.1", "::1"].includes(frontend.hostname)
+  ) {
+    console.info(`Local password reset URL: ${resetUrl}`);
+    return;
+  }
+
+  throw new Error("Password reset email delivery is not configured");
 }
 
 function toPublicUser(user: SafeUser) {
@@ -166,7 +191,6 @@ export function createAuthRouter(
   repository: AuthRepository,
   options: {
     deliverResetLink?: (email: string, resetUrl: string) => Promise<void>;
-    now?: () => Date;
   } = {},
 ) {
   const router = Router();
@@ -194,7 +218,7 @@ export function createAuthRouter(
       });
     }
 
-    const { name, email, password, role } = parsed.data;
+    const { name, email, password } = parsed.data;
 
     try {
       if (await repository.findByEmail(email)) {
@@ -202,7 +226,12 @@ export function createAuthRouter(
       }
 
       const passwordHash = await argon2.hash(password);
-      const user = await repository.create({ name, email, passwordHash, role });
+      const user = await repository.create({
+        name,
+        email,
+        passwordHash,
+        role: UserRole.STUDENT,
+      });
 
       await regenerateSession(request);
       request.session.userId = user.id;
@@ -265,7 +294,7 @@ export function createAuthRouter(
         await repository.storePasswordResetToken({
           userId: user.id,
           tokenHash: hashResetToken(token),
-          expiresAt: new Date((options.now?.() ?? new Date()).getTime() + passwordResetTokenLifetimeMs),
+          expiresInMs: passwordResetTokenLifetimeMs,
         });
         const resetUrl = new URL("/reset-password", env.frontendOrigin);
         resetUrl.searchParams.set("token", token);
@@ -277,9 +306,10 @@ export function createAuthRouter(
 
       await waitUntilMinimumDuration(startedAt);
       return response.status(202).json(genericResetRequestResponse);
-    } catch (error) {
-      logAuthError("password reset request", error);
-      return serverError(response);
+    } catch {
+      console.error("Password reset request processing failed");
+      await waitUntilMinimumDuration(startedAt);
+      return response.status(202).json(genericResetRequestResponse);
     }
   });
 
@@ -297,7 +327,6 @@ export function createAuthRouter(
       const reset = await repository.resetPassword(
         hashResetToken(parsed.data.token),
         passwordHash,
-        options.now?.() ?? new Date(),
       );
       if (!reset) {
         return response.status(400).json({ error: "This reset link is invalid or has expired." });

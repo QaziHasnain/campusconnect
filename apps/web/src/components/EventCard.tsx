@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import {
   Code2,
   Cpu,
@@ -61,6 +62,9 @@ export function EventCard({
             </span>
           )}
         </div>
+        <Link className="event-detail-link" to={`/events/${encodeURIComponent(event.id)}`}>
+          View details <span aria-hidden="true">→</span>
+        </Link>
         {registrationControl ? (
           <div className="event-registration-control">{registrationControl}</div>
         ) : showRegistrationControl ? (

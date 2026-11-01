@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { CalendarDays } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { EventCard } from '../components/EventCard'
@@ -62,24 +61,7 @@ export function MyRegistrationsPage() {
     user?.role === 'STUDENT' && (isLoading || loadedUserId !== user.id)
 
   return (
-    <div className="site-shell">
-      <header className="site-header">
-        <Link className="brand" to="/" aria-label="CampusConnect home">
-          <span className="brand-mark">
-            <CalendarDays size={20} strokeWidth={2.2} aria-hidden="true" />
-          </span>
-          <span>campus<span className="brand-accent">connect</span></span>
-        </Link>
-        <nav className="main-nav" aria-label="Main navigation">
-          <Link to="/">Events</Link>
-          {user && <span className="signed-in-label">Hi, {user.name}</span>}
-        </nav>
-        <Link className="button button-primary header-cta" to="/">
-          Explore events
-        </Link>
-      </header>
-
-      <main>
+    <main>
         <section className="registrations-section section-wrap" aria-labelledby="registrations-title">
           <span className="eyebrow section-eyebrow">YOUR CAMPUS PLANS</span>
           <h1 id="registrations-title">My registrations</h1>
@@ -144,7 +126,6 @@ export function MyRegistrationsPage() {
             </div>
           )}
         </section>
-      </main>
-    </div>
+    </main>
   )
 }

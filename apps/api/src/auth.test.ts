@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { User } from "./generated/prisma/client.js";
 import { UserRole } from "./generated/prisma/client.js";
 import type { AuthRepository } from "./auth.js";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/campusconnect";
@@ -18,7 +18,6 @@ const resetTokens = new Map<
 const sessionStore = new MemoryStore();
 let app: import("express").Express;
 let deliveredResetUrl: string | null = null;
-let testNow = new Date("2026-10-31T12:00:00.000Z");
 
 const repository: AuthRepository = {
   async findByEmail(email) {
@@ -48,17 +47,21 @@ const repository: AuthRepository = {
     for (const [hash, token] of resetTokens) {
       if (token.userId === data.userId) resetTokens.delete(hash);
     }
-    resetTokens.set(data.tokenHash, data);
+    resetTokens.set(data.tokenHash, {
+      ...data,
+      expiresAt: new Date(Date.now() + data.expiresInMs),
+    });
   },
-  async resetPassword(tokenHash, passwordHash, now) {
+  async resetPassword(tokenHash, passwordHash) {
     const token = resetTokens.get(tokenHash);
-    if (!token || token.expiresAt <= now) {
-      if (token) resetTokens.delete(tokenHash);
+    if (!token || token.expiresAt <= new Date()) {
       return false;
     }
+    resetTokens.delete(tokenHash);
 
     const user = users.get(token.userId);
     if (!user) return false;
+    const now = new Date();
     users.set(user.id, { ...user, passwordHash, updatedAt: now });
     for (const [hash, savedToken] of resetTokens) {
       if (savedToken.userId === user.id) resetTokens.delete(hash);
@@ -97,7 +100,6 @@ beforeAll(async () => {
     authRepository: repository,
     sessionStore,
     authRouterOptions: {
-      now: () => testNow,
       deliverResetLink: async (_email, resetUrl) => {
         deliveredResetUrl = resetUrl;
       },
@@ -113,14 +115,13 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
       name: " Ada Lovelace ",
       email: " ADA@Example.COM ",
       password: "correct-horse-battery",
-      role: "ORGANIZER",
     });
 
     expect(registration.status).toBe(201);
     expect(registration.body.user).toMatchObject({
       name: "Ada Lovelace",
       email: "ada@example.com",
-      role: "ORGANIZER",
+      role: "STUDENT",
     });
     expect(registration.body.user).not.toHaveProperty("passwordHash");
 
@@ -199,6 +200,14 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
     });
     expect(result.status).toBe(400);
 
+    const organizerRoleAttempt = await request(app).post("/api/auth/register").send({
+      name: "Role Escalation",
+      email: "role-escalation@example.com",
+      password: "another-valid-password",
+      role: "ORGANIZER",
+    });
+    expect(organizerRoleAttempt.status).toBe(400);
+
     const registration = await request(app).post("/api/auth/register").send({
       name: "Grace Hopper",
       email: "grace@example.com",
@@ -255,6 +264,11 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
     expect(reset.body.message).toMatch(/Sign in with your new password/);
     expect(resetTokens.has(tokenHash)).toBe(false);
 
+    const oldPasswordLogin = await request(app)
+      .post("/api/auth/login")
+      .send({ email: "ada@example.com", password: "correct-horse-battery" });
+    expect(oldPasswordLogin.status).toBe(401);
+
     const reused = await request(app)
       .post("/api/auth/reset-password")
       .send({ token, password: "another-new-password" });
@@ -273,7 +287,7 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
     resetTokens.set(expiredHash, {
       userId: "test-1",
       tokenHash: expiredHash,
-      expiresAt: new Date(testNow.getTime() - 1),
+      expiresAt: new Date(Date.now() - 1000),
     });
 
     const expired = await request(app).post("/api/auth/reset-password").send({
@@ -318,5 +332,78 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
 
     expect(reset.status).toBe(200);
     expect((await agent.get("/api/auth/me")).status).toBe(401);
+    expect(
+      (
+        await request(app)
+          .post("/api/auth/login")
+          .send({ email: "session-reset@example.com", password: "original-password" })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await request(app)
+          .post("/api/auth/login")
+          .send({ email: "session-reset@example.com", password: "replacement-password" })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("rate limits password reset requests without changing the generic response", async () => {
+    const request = (await import("supertest")).default;
+    const { createApp } = await import("./app.js");
+    const limitedApp = createApp({
+      authRepository: repository,
+      sessionStore: new MemoryStore(),
+      authRouterOptions: {
+        deliverResetLink: async () => {},
+      },
+    });
+
+    const responses = [];
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      responses.push(
+        await request(limitedApp)
+          .post("/api/auth/forgot-password")
+          .send({ email: `unknown-${attempt}@example.com` }),
+      );
+    }
+
+    expect(responses.slice(0, 5).map((response) => response.status)).toEqual([
+      202, 202, 202, 202, 202,
+    ]);
+    expect(responses.slice(0, 5).map((response) => response.body)).toEqual(
+      Array(5).fill(responses[0].body),
+    );
+    expect(responses[5].status).toBe(429);
+    expect(responses[5].headers["retry-after"]).toBeDefined();
+  });
+
+  it("keeps email delivery failures indistinguishable from unknown addresses", async () => {
+    const request = (await import("supertest")).default;
+    const { createApp } = await import("./app.js");
+    const deliveryFailureApp = createApp({
+      authRepository: repository,
+      sessionStore: new MemoryStore(),
+      authRouterOptions: {
+        deliverResetLink: async () => {
+          throw new Error("test-only mail failure");
+        },
+      },
+    });
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const known = await request(deliveryFailureApp)
+        .post("/api/auth/forgot-password")
+        .send({ email: "ada@example.com" });
+      const unknown = await request(deliveryFailureApp)
+        .post("/api/auth/forgot-password")
+        .send({ email: "unknown-delivery@example.com" });
+
+      expect(known.status).toBe(202);
+      expect(known.body).toEqual(unknown.body);
+    } finally {
+      logError.mockRestore();
+    }
   });
 });

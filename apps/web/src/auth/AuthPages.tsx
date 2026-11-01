@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { CalendarDays, ArrowLeft, ArrowRight } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { z } from 'zod'
 import { useAuth } from './useAuth'
@@ -30,7 +30,6 @@ const registrationInputSchema = z.object({
     .string()
     .min(8, 'Use at least 8 characters for your password')
     .max(128, 'Password must be 128 characters or fewer'),
-  role: z.enum(['STUDENT', 'ORGANIZER']),
 })
 
 const passwordResetRequestInputSchema = z.object({ email: emailSchema })
@@ -78,20 +77,7 @@ function AuthPageFrame({
   alternateLabel: string
 }) {
   return (
-    <div className="site-shell auth-shell">
-      <header className="site-header auth-header">
-        <Link className="brand" to="/" aria-label="CampusConnect home">
-          <span className="brand-mark">
-            <CalendarDays size={20} strokeWidth={2.2} aria-hidden="true" />
-          </span>
-          <span>campus<span className="brand-accent">connect</span></span>
-        </Link>
-        <Link className="auth-home-link" to="/">
-          <ArrowLeft size={15} aria-hidden="true" /> Back to events
-        </Link>
-      </header>
-
-      <main className="auth-main">
+    <main className="auth-main">
         <section className="auth-card" aria-labelledby="auth-title">
           <span className="eyebrow section-eyebrow">CAMPUS LIFE, CONNECTED</span>
           <h1 id="auth-title">{title}</h1>
@@ -102,8 +88,7 @@ function AuthPageFrame({
           </p>
         </section>
         <p className="auth-footnote">Your campus. Your events. One place.</p>
-      </main>
-    </div>
+    </main>
   )
 }
 
@@ -144,8 +129,8 @@ export function LoginPage() {
         method: 'POST',
         body: JSON.stringify(parsed.data),
       })
-      await refreshUser()
-      navigate('/', { replace: true })
+      const currentUser = await refreshUser()
+      navigate(currentUser.role === 'ORGANIZER' ? '/organizer' : '/', { replace: true })
     } catch (requestError) {
       setError(getApiErrorMessage(requestError, 'login'))
     } finally {
@@ -374,7 +359,6 @@ export function RegistrationPage() {
       name: formData.get('name'),
       email: formData.get('email'),
       password: formData.get('password'),
-      role: formData.get('role'),
     })
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message ?? 'Please check your information.')
@@ -387,8 +371,8 @@ export function RegistrationPage() {
         method: 'POST',
         body: JSON.stringify(parsed.data),
       })
-      await refreshUser()
-      navigate('/', { replace: true })
+      const currentUser = await refreshUser()
+      navigate(currentUser.role === 'ORGANIZER' ? '/organizer' : '/', { replace: true })
     } catch (requestError) {
       setError(getApiErrorMessage(requestError, 'register'))
     } finally {
@@ -440,11 +424,6 @@ export function RegistrationPage() {
           minLength={8}
           maxLength={128}
         />
-        <label htmlFor="register-role">I’m joining as a</label>
-        <select id="register-role" name="role" defaultValue="STUDENT" required>
-          <option value="STUDENT">Student</option>
-          <option value="ORGANIZER">Organizer</option>
-        </select>
         {error && <p className="auth-error" role="alert">{error}</p>}
         <button className="button button-primary auth-submit" type="submit" disabled={isChecking || isSubmitting}>
           {isSubmitting ? 'Creating account…' : 'Create account'}

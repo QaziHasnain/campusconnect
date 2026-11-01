@@ -7,8 +7,9 @@
     "dev": "tsx watch src/server.ts",
     "build": "prisma generate && tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "test": "vitest run src",
+    "test": "vitest run src --maxWorkers=1",
     "db:seed:events": "tsx prisma/seed-events.ts",
+    "db:seed:demo": "tsx prisma/seed-demo.ts",
     "db:migrate": "prisma migrate deploy",
     "db:migrate:dev": "prisma migrate dev"
   },
@@ -22,6 +23,7 @@
     "express": "^5.3.0",
     "express-session": "^1.19.0",
     "helmet": "^8.3.0",
+    "nodemailer": "^7.0.10",
     "pg": "^8.23.1",
     "zod": "^4.6.7"
   },
@@ -31,6 +33,7 @@
     "@types/express": "^5.0.6",
     "@types/express-session": "^1.19.0",
     "@types/node": "^26.6.5",
+    "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",
     "prisma": "^7.10.1",

@@ -80,6 +80,7 @@ interface EventFilters {
 
 export interface EventRepository {
   listPublished(filters: EventFilters): Promise<EventRecord[]>;
+  listOwned(organizerId: string): Promise<EventRecord[]>;
   findPublishedById(id: string): Promise<EventRecord | null>;
   findById(id: string): Promise<EventRecord | null>;
   findUserRole(userId: string): Promise<UserRole | null>;
@@ -108,6 +109,12 @@ export function createPrismaEventRepository(prisma: PrismaClient): EventReposito
               }
             : {}),
         },
+        orderBy: { startAt: "asc" },
+        select: eventSelect,
+      }),
+    listOwned: (organizerId) =>
+      prisma.event.findMany({
+        where: { organizerId },
         orderBy: { startAt: "asc" },
         select: eventSelect,
       }),
@@ -307,6 +314,18 @@ function toPublicRegistration(registration: RegistrationRecord) {
 export function createEventRouter(repository: EventRepository) {
   const router = Router();
 
+  router.get("/mine", async (request, response) => {
+    const organizerId = await requireRole(request, response, repository, UserRole.ORGANIZER);
+    if (!organizerId) return;
+
+    try {
+      const events = await repository.listOwned(organizerId);
+      return response.json({ events: events.map(toPublicEvent) });
+    } catch (error) {
+      return sendServerError(response, "organizer event listing", error);
+    }
+  });
+
   router.get("/", async (request, response) => {
     const parsed = listEventsQuerySchema.safeParse(request.query);
     if (!parsed.success) return sendValidationError(response, "Invalid event filters", parsed.error);
@@ -457,6 +476,11 @@ export function createEventRouter(repository: EventRepository) {
       if (!deleted) return response.status(404).json({ error: "Event not found" });
       return response.status(204).end();
     } catch (error) {
+      if (isForeignKeyConstraintError(error)) {
+        return response.status(409).json({
+          error: "Events with registrations cannot be deleted",
+        });
+      }
       return sendServerError(response, "deletion", error);
     }
   });
@@ -493,5 +517,14 @@ function isUniqueConstraintError(error: unknown): boolean {
     error !== null &&
     "code" in error &&
     error.code === "P2002"
+  );
+}
+
+function isForeignKeyConstraintError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "P2003"
   );
 }
