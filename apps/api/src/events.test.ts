@@ -23,6 +23,8 @@ process.env.FRONTEND_ORIGIN = "http://localhost:5173";
 const users = new Map<string, User>();
 const events = new Map<string, EventRecord>();
 const registrations = new Map<string, RegistrationRecord>();
+const registrationNotifications: Array<{ userId: string; eventId: string; registrationId: string }> = [];
+const paymentReservationCounts = new Map<string, number>();
 const deletionBlockedEventIds = new Set<string>();
 const verificationTokens = new Map<string, { userId: string; tokenHash: string; expiresAt: Date }>();
 let app: import("express").Express;
@@ -91,7 +93,7 @@ const authRepository: AuthRepository = {
 const eventRepository: EventRepository = {
   async listPublished(filters) {
     return [...events.values()]
-      .filter((event) => event.status === EventStatus.PUBLISHED)
+      .filter((event) => event.status === EventStatus.PUBLISHED || event.status === EventStatus.CANCELLED)
       .filter((event) => !filters.category || event.category === filters.category)
       .filter((event) => {
         if (!filters.search) return true;
@@ -107,7 +109,50 @@ const eventRepository: EventRepository = {
   },
   async findPublishedById(id) {
     const event = events.get(id);
-    return event?.status === EventStatus.PUBLISHED ? event : null;
+    return event?.status === EventStatus.PUBLISHED || event?.status === EventStatus.CANCELLED
+      ? event
+      : null;
+  },
+  async listOwnedAttendees(eventId, ownerId) {
+    const event = events.get(eventId);
+    if (!event || event.organizerId !== ownerId) return null;
+    const eventRegistrations = [...registrations.values()].filter((item) => item.eventId === eventId);
+    const attendees = eventRegistrations.flatMap((registration) => {
+      const user = users.get(registration.userId);
+      if (!user || user.role !== UserRole.STUDENT) return [];
+      return [{
+        name: user.name,
+        email: user.email,
+        registeredAt: registration.createdAt,
+        registrationStatus: "CONFIRMED" as const,
+        paymentStatus: "FREE" as const,
+      }];
+    });
+    return {
+      event: { id: event.id, title: event.title, status: event.status, capacity: event.capacity },
+      totalRegistrations: attendees.length,
+      availableCapacity: event.status === EventStatus.CANCELLED
+        ? 0
+        : event.capacity === null ? null : Math.max(0, event.capacity - attendees.length),
+      attendees,
+    };
+  },
+  async cancelOwned(eventId, ownerId) {
+    const event = events.get(eventId);
+    if (!event || event.organizerId !== ownerId) return null;
+    if (event.status === EventStatus.CANCELLED) return { event, newlyCancelled: false };
+    const cancelled = { ...event, status: EventStatus.CANCELLED, updatedAt: new Date() };
+    events.set(eventId, cancelled);
+    for (const registration of registrations.values()) {
+      if (registration.eventId === eventId) {
+        registrationNotifications.push({
+          userId: registration.userId,
+          eventId,
+          registrationId: registration.id,
+        });
+      }
+    }
+    return { event: cancelled, newlyCancelled: true };
   },
   async findById(id) {
     return events.get(id) ?? null;
@@ -117,7 +162,9 @@ const eventRepository: EventRepository = {
   },
   async registerForEvent(eventId, userId): Promise<RegistrationResult> {
     const event = events.get(eventId);
-    if (!event || event.status !== EventStatus.PUBLISHED) return { status: "not_found" };
+    if (!event) return { status: "not_found" };
+    if (event.status === EventStatus.CANCELLED) return { status: "cancelled" };
+    if (event.status !== EventStatus.PUBLISHED) return { status: "not_found" };
     if (event.ticketPricePaise !== null) return { status: "paid_event" };
 
     const registrationKey = `${userId}:${eventId}`;
@@ -137,6 +184,10 @@ const eventRepository: EventRepository = {
       createdAt: new Date(),
     };
     registrations.set(registrationKey, registration);
+    const updatedCount = [...registrations.values()].filter(
+      (item) => item.eventId === eventId,
+    ).length;
+    events.set(eventId, { ...event, registeredCount: updatedCount });
     return { status: "created", registration };
   },
   async findRegistrationStatus(eventId, userId) {
@@ -163,6 +214,8 @@ const eventRepository: EventRepository = {
       createdAt: now,
       updatedAt: now,
       organizer: { name: user.name },
+      registeredCount: 0,
+      activePaymentReservationCount: 0,
     };
     events.set(id, event);
     return event;
@@ -188,6 +241,7 @@ beforeAll(async () => {
   app = createApp({
     authRepository,
     eventRepository,
+    notifyRegistration: async (input) => { registrationNotifications.push(input); },
     sessionStore: new MemoryStore(),
     authRouterOptions: {
       deliverVerificationLink: async (_email, _name, verificationUrl) => {
@@ -248,11 +302,15 @@ beforeAll(async () => {
 beforeEach(() => {
   events.clear();
   registrations.clear();
+  registrationNotifications.length = 0;
+  paymentReservationCounts.clear();
   deletionBlockedEventIds.clear();
 });
 afterEach(() => {
   events.clear();
   registrations.clear();
+  registrationNotifications.length = 0;
+  paymentReservationCounts.clear();
   deletionBlockedEventIds.clear();
 });
 
@@ -295,6 +353,8 @@ function seedEvent({
     createdAt: new Date("2026-10-01T00:00:00.000Z"),
     updatedAt: new Date("2026-10-01T00:00:00.000Z"),
     organizer: { name: owner.name },
+    registeredCount: [...registrations.values()].filter((item) => item.eventId === id).length,
+    activePaymentReservationCount: paymentReservationCounts.get(id) ?? 0,
   };
   events.set(id, event);
   return event;
@@ -325,6 +385,69 @@ describe("Event API", () => {
     ]);
     expect(response.body.events[0].status).toBe("DRAFT");
     expect(response.body.events[0]).not.toHaveProperty("organizerId");
+  });
+
+  it("lets an organizer view only their attendees with minimal registration details", async () => {
+    seedEvent({ id: "attendee-list", capacity: 4 });
+    expect((await student.post("/api/events/attendee-list/register")).status).toBe(201);
+    expect((await otherStudent.post("/api/events/attendee-list/register")).status).toBe(201);
+
+    const response = await organizer.get("/api/events/attendee-list/attendees");
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      event: { id: "attendee-list", capacity: 4 },
+      totalRegistrations: 2,
+      availableCapacity: 2,
+    });
+    const attendee = response.body.attendees.find((item: { email: string }) =>
+      item.email.includes("another.student"),
+    );
+    expect(attendee).toMatchObject({
+      name: "Another Student",
+      email: expect.stringContaining("another.student"),
+      registrationStatus: "CONFIRMED",
+      paymentStatus: "FREE",
+    });
+    expect(attendee.registeredAt).toBeTruthy();
+    expect(attendee).not.toHaveProperty("userId");
+    expect(attendee).not.toHaveProperty("paymentId");
+    expect(attendee).not.toHaveProperty("passwordHash");
+
+    expect((await otherOrganizer.get("/api/events/attendee-list/attendees")).status).toBe(404);
+    expect((await student.get("/api/events/attendee-list/attendees")).status).toBe(403);
+    expect((await request(app).get("/api/events/attendee-list/attendees")).status).toBe(401);
+  });
+
+  it("cancels owned events once, preserves registrations, and blocks new registrations", async () => {
+    const event = seedEvent({ id: "cancel-event", capacity: 4 });
+    expect((await student.post("/api/events/cancel-event/register")).status).toBe(201);
+    const existingRegistration = registrations.get(`${studentId}:cancel-event`);
+    expect(existingRegistration).toBeTruthy();
+    registrationNotifications.length = 0;
+
+    const cancelled = await organizer.post("/api/events/cancel-event/cancel").send({});
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.newlyCancelled).toBe(true);
+    expect(cancelled.body.event.status).toBe("CANCELLED");
+    expect(registrations.get(`${studentId}:cancel-event`)).toEqual(existingRegistration);
+    expect(registrationNotifications).toHaveLength(1);
+
+    const repeated = await organizer.post("/api/events/cancel-event/cancel").send({});
+    expect(repeated.status).toBe(200);
+    expect(repeated.body.newlyCancelled).toBe(false);
+    expect(registrationNotifications).toHaveLength(1);
+    expect((await student.post("/api/events/cancel-event/register")).status).toBe(409);
+    expect((await request(app).get("/api/events/cancel-event")).body.event.status).toBe("CANCELLED");
+    expect(events.get(event.id)?.status).toBe(EventStatus.CANCELLED);
+  });
+
+  it("rejects cancellation by other organizers and students", async () => {
+    seedEvent({ id: "cancel-owned" });
+    seedEvent({ id: "cancel-foreign", ownerId: otherOrganizerId });
+    expect((await otherOrganizer.post("/api/events/cancel-owned/cancel").send({})).status).toBe(404);
+    expect((await student.post("/api/events/cancel-owned/cancel").send({})).status).toBe(403);
+    expect((await request(app).post("/api/events/cancel-owned/cancel").send({})).status).toBe(401);
+    expect((await organizer.post("/api/events/cancel-foreign/cancel").send({})).status).toBe(404);
   });
 
   it("lists published events only, with filters, ascending dates, and organizer display name", async () => {
@@ -605,15 +728,74 @@ describe("Event API", () => {
     ).toHaveLength(1);
   });
 
+  it("returns privacy-safe seat totals and refreshes availability after free registration", async () => {
+    seedEvent({ id: "seat-available", capacity: 120 });
+    seedEvent({ id: "seat-almost-full", capacity: 10 });
+    for (let index = 0; index < 9; index += 1) {
+      registrations.set(`existing-student-${index}:seat-almost-full`, {
+        id: `existing-registration-${index}`,
+        userId: `existing-student-${index}`,
+        eventId: "seat-almost-full",
+        createdAt: new Date(),
+      });
+    }
+    events.set("seat-almost-full", { ...events.get("seat-almost-full")!, registeredCount: 9 });
+    seedEvent({ id: "seat-sold-out", capacity: 1 });
+    registrations.set("existing-student:seat-sold-out", {
+      id: "sold-out-registration",
+      userId: "existing-student",
+      eventId: "seat-sold-out",
+      createdAt: new Date(),
+    });
+    events.set("seat-sold-out", { ...events.get("seat-sold-out")!, registeredCount: 1 });
+    seedEvent({ id: "seat-reserved", capacity: 12 });
+    paymentReservationCounts.set("seat-reserved", 2);
+    events.set("seat-reserved", {
+      ...events.get("seat-reserved")!,
+      activePaymentReservationCount: 2,
+    });
+
+    const response = await request(app).get("/api/events");
+    const byId = new Map(response.body.events.map((event: { id: string }) => [event.id, event]));
+    expect(byId.get("seat-available")).toMatchObject({ capacity: 120, registeredCount: 0, remainingSeats: 120 });
+    expect(byId.get("seat-almost-full")).toMatchObject({ capacity: 10, registeredCount: 9, remainingSeats: 1 });
+    expect(byId.get("seat-sold-out")).toMatchObject({ capacity: 1, registeredCount: 1, remainingSeats: 0 });
+    expect(byId.get("seat-reserved")).toMatchObject({ capacity: 12, registeredCount: 0, remainingSeats: 10 });
+    expect(JSON.stringify(response.body)).not.toContain("existing-student");
+    expect(JSON.stringify(response.body)).not.toContain("userId");
+
+    await student.post("/api/events/seat-available/register").expect(201);
+    const refreshed = await student.get("/api/events/seat-available");
+    expect(refreshed.body.event).toMatchObject({ registeredCount: 1, remainingSeats: 119 });
+  });
+
   it("preserves free registrations and blocks the free endpoint for paid events", async () => {
     seedEvent({ id: "free-registration" });
-    expect((await student.post("/api/events/free-registration/register")).status).toBe(201);
+    const success = await student.post("/api/events/free-registration/register");
+    expect(success.status).toBe(201);
+    expect(registrationNotifications).toEqual([{
+      userId: studentId,
+      eventId: "free-registration",
+      registrationId: success.body.registration.id,
+    }]);
 
     seedEvent({ id: "paid-registration", ticketPricePaise: 1000 });
     const paidAttempt = await student.post("/api/events/paid-registration/register").send({});
     expect(paidAttempt.status).toBe(409);
     expect(paidAttempt.body.error).toBe("Payment is required for this event");
     expect(registrations.has(`${studentId}:paid-registration`)).toBe(false);
+    expect(registrationNotifications).toHaveLength(1);
+  });
+
+  it("does not let notification delivery failure undo a successful free registration", async () => {
+    registrationNotifications.length = 0;
+    seedEvent({ id: "notification-failure" });
+    const original = registrationNotifications.push.bind(registrationNotifications);
+    registrationNotifications.push = (() => { throw new Error("notification unavailable"); }) as typeof registrationNotifications.push;
+    const result = await student.post("/api/events/notification-failure/register");
+    registrationNotifications.push = original;
+    expect(result.status).toBe(201);
+    expect(registrations.has(`${studentId}:notification-failure`)).toBe(true);
   });
 
   it("returns only the current student's registration status", async () => {

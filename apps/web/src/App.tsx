@@ -27,12 +27,14 @@ import { UpcomingEventRow } from './components/UpcomingEventRow'
 import { ApiError, apiRequest, eventListResponseSchema, getHealth } from './lib/api'
 import { formatEventDateTime } from './lib/eventFormatting'
 import { toApiCategory, toCampusEvent } from './lib/events'
+import { eventRegistrationChangedEvent } from './lib/eventAvailability'
 import type { CampusEvent } from './types/event'
 import type { EventCategory } from './types/event'
 import { MyRegistrationsPage } from './pages/MyRegistrationsPage'
 import { NotificationsPage } from './pages/NotificationsPage'
 import { OrganizerDashboard } from './pages/OrganizerDashboard'
 import { OrganizerEventForm } from './pages/OrganizerEventForm'
+import { OrganizerAttendeesPage } from './pages/OrganizerAttendeesPage'
 import { SiteLayout } from './components/SiteLayout'
 import {
   AboutPage,
@@ -54,7 +56,7 @@ function OrganizerRoute({ children }: { children: ReactNode }) {
   return children
 }
 
-function StudentRoute({ children }: { children: ReactNode }) {
+export function StudentRoute({ children }: { children: ReactNode }) {
   const { user, isChecking } = useAuth()
 
   if (isChecking) {
@@ -111,6 +113,12 @@ function LandingPage() {
       cancelled = true
     }
   }, [debouncedSearch, retryEvents, selectedCategory])
+
+  useEffect(() => {
+    const refreshAfterRegistration = () => setRetryEvents((value) => value + 1)
+    window.addEventListener(eventRegistrationChangedEvent, refreshAfterRegistration)
+    return () => window.removeEventListener(eventRegistrationChangedEvent, refreshAfterRegistration)
+  }, [])
 
   useEffect(() => {
     if (!import.meta.env.DEV) return
@@ -460,6 +468,10 @@ function App() {
             <Route
               path="/organizer/events/:eventId/edit"
               element={<OrganizerRoute><OrganizerEventForm /></OrganizerRoute>}
+            />
+            <Route
+              path="/organizer/events/:eventId/attendees"
+              element={<OrganizerRoute><OrganizerAttendeesPage /></OrganizerRoute>}
             />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegistrationPage />} />

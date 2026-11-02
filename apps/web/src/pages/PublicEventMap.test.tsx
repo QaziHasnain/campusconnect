@@ -3,6 +3,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { EventDetailsPage } from './PublicPages'
+import type { ApiEvent } from '../lib/api'
 
 vi.mock('../auth/useAuth', () => ({
   useAuth: () => ({ user: null, isChecking: false }),
@@ -44,7 +45,7 @@ vi.mock('react-leaflet', async () => {
   }
 })
 
-const event = {
+const event: ApiEvent = {
   id: 'event-map',
   title: 'Stanford Memorial Auditorium Event',
   description: 'Meet the campus community.',
@@ -58,6 +59,8 @@ const event = {
   endAt: null,
   status: 'PUBLISHED',
   capacity: null,
+  registeredCount: 0,
+  remainingSeats: null,
   createdAt: '2026-10-01T00:00:00.000Z',
   updatedAt: '2026-10-01T00:00:00.000Z',
   organizer: { name: 'Campus Team' },
@@ -92,6 +95,7 @@ describe('public event venue display', () => {
   it('renders the address, accurate map marker, and coordinate directions when coordinates exist', async () => {
     renderEventDetails(event)
 
+    expect(await screen.findByText('FREE')).toBeTruthy()
     expect(await screen.findByText('551 Jane Stanford Way, Stanford, CA 94305, USA')).toBeTruthy()
     expect((await screen.findByTestId('venue-map-marker')).getAttribute('data-position'))
       .toBe('37.42902,-122.16645')
@@ -105,6 +109,17 @@ describe('public event venue display', () => {
       'http://localhost:3000/api/events/event-map',
       expect.objectContaining({ credentials: 'include' }),
     )
+  })
+
+  it('shows a paid event ticket at the configured INR price', async () => {
+    renderEventDetails({ ...event, ticketPricePaise: 49900 })
+
+    expect(await screen.findByText('₹499')).toBeTruthy()
+  })
+
+  it('shows remaining seats on event details', async () => {
+    renderEventDetails({ ...event, capacity: 120, registeredCount: 110, remainingSeats: 10 })
+    expect(await screen.findByText('10 seats left')).toBeTruthy()
   })
 
   it('does not render a map without coordinates and uses the address for directions', async () => {

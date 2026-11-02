@@ -37,6 +37,7 @@ class FakePaymentRepository implements PaymentRepository {
     ["paid-event", { status: EventStatus.PUBLISHED, price: 1250, capacity: 3 }],
     ["limited-event", { status: EventStatus.PUBLISHED, price: 500, capacity: 1 }],
     ["free-event", { status: EventStatus.PUBLISHED, price: null, capacity: null }],
+    ["cancelled-event", { status: EventStatus.CANCELLED, price: 1250, capacity: 3 }],
   ]);
   private readonly attempts = new Map<string, PaymentAttemptRecord>();
   private readonly registrations = new Set<string>();
@@ -50,7 +51,9 @@ class FakePaymentRepository implements PaymentRepository {
 
   async reserveAttempt(eventId: string, userId: string, expiresAt: Date, now: Date) {
     const event = this.events.get(eventId);
-    if (!event || event.status !== EventStatus.PUBLISHED) return { status: "not_found" as const };
+    if (!event) return { status: "not_found" as const };
+    if (event.status === EventStatus.CANCELLED) return { status: "event_cancelled" as const };
+    if (event.status !== EventStatus.PUBLISHED) return { status: "not_found" as const };
     if (event.price === null) return { status: "free_event" as const };
     if (this.registrations.has(`${userId}:${eventId}`)) {
       return { status: "already_registered" as const };
@@ -204,8 +207,18 @@ class FakePaymentRepository implements PaymentRepository {
     return "processed" as const;
   }
 
+  async findSuccessfulAttemptByOrder(orderId: string) {
+    return [...this.attempts.values()].find((attempt) =>
+      attempt.razorpayOrderId === orderId && attempt.status === EventPaymentStatus.SUCCESSFUL,
+    ) ?? null;
+  }
+
   registrationCount() {
     return this.registrations.size;
+  }
+
+  attemptCount() {
+    return this.attempts.size;
   }
 }
 
@@ -243,6 +256,7 @@ function createTestApp(
   repository: FakePaymentRepository,
   gateway: FakePaymentGateway,
   config: PaymentConfiguration = configuration,
+  notifyRegistration?: (input: { userId: string; eventId: string; registrationId: string }) => Promise<void>,
 ) {
   const app = express();
   app.use(
@@ -253,7 +267,7 @@ function createTestApp(
       store: new MemoryStore(),
     }),
   );
-  app.use("/api/payments", createPaymentRouter(repository, gateway, config));
+  app.use("/api/payments", createPaymentRouter(repository, gateway, config, notifyRegistration));
   app.post("/test/login/:userId", (request_, response) => {
     request_.session.userId = request_.params.userId;
     response.status(204).end();
@@ -269,11 +283,20 @@ describe("Razorpay event payments", () => {
   let app: express.Express;
   let firstStudent: ReturnType<typeof request.agent>;
   let secondStudent: ReturnType<typeof request.agent>;
+  let registrationNotifications: Array<{ userId: string; eventId: string; registrationId: string }>;
+  let notifiedRegistrations: Set<string>;
 
   beforeEach(async () => {
     repository = new FakePaymentRepository();
     gateway = new FakePaymentGateway();
-    app = createTestApp(repository, gateway);
+    registrationNotifications = [];
+    notifiedRegistrations = new Set();
+    app = createTestApp(repository, gateway, configuration, async (input) => {
+      if (!notifiedRegistrations.has(input.registrationId)) {
+        notifiedRegistrations.add(input.registrationId);
+        registrationNotifications.push(input);
+      }
+    });
     firstStudent = request.agent(app);
     secondStudent = request.agent(app);
     await Promise.all([
@@ -297,6 +320,73 @@ describe("Razorpay event payments", () => {
     expect(order.body.amountPaise).toBe(1250);
     expect(gateway.orders[0]).toMatchObject({ amountPaise: 1250, currency: "INR" });
     expect(JSON.stringify(order.body)).not.toContain(keySecret);
+  });
+
+  it("does not create payment orders for cancelled events", async () => {
+    const response = await createOrder(firstStudent, "cancelled-event");
+    expect(response.status).toBe(409);
+    expect(response.body.error).toBe("Event has been cancelled");
+    expect(gateway.orders).toHaveLength(0);
+    expect(repository.attemptCount()).toBe(0);
+  });
+
+  it.each([
+    { label: "with a webhook secret", configuredWebhookSecret: webhookSecret },
+    { label: "without a webhook secret", configuredWebhookSecret: null },
+  ])("allows secure test checkout $label", async ({ configuredWebhookSecret }) => {
+    const checkoutConfiguration = getPaymentConfiguration({
+      mode: "test",
+      keyId: "rzp_test_fixture",
+      keySecret,
+      webhookSecret: configuredWebhookSecret,
+    });
+    expect(checkoutConfiguration.enabled).toBe(true);
+
+    const checkoutApp = createTestApp(repository, gateway, checkoutConfiguration, async (input) => {
+      registrationNotifications.push(input);
+    });
+    const student = request.agent(checkoutApp);
+    await student.post("/test/login/student-one");
+
+    const order = await student.post("/api/payments/events/paid-event/orders").send({});
+    expect(order.status).toBe(201);
+
+    const paymentId = `payment-${configuredWebhookSecret ? "with" : "without"}-webhook`;
+    gateway.payments.set(paymentId, {
+      id: paymentId,
+      orderId: order.body.orderId,
+      amountPaise: order.body.amountPaise,
+      currency: "INR",
+      status: "captured",
+    });
+    const verification = {
+      paymentAttemptId: order.body.paymentAttemptId,
+      paymentId,
+      signature: sign(keySecret, `${order.body.orderId}|${paymentId}`),
+    };
+
+    const invalidSignature = await student
+      .post("/api/payments/checkout/verify")
+      .send({ ...verification, signature: "0".repeat(64) });
+    expect(invalidSignature.status).toBe(400);
+    expect(repository.registrationCount()).toBe(0);
+
+    const verifiedPayment = await student
+      .post("/api/payments/checkout/verify")
+      .send(verification);
+    expect(verifiedPayment.status).toBe(200);
+    expect(verifiedPayment.body.status).toBe(EventPaymentStatus.SUCCESSFUL);
+    expect(repository.registrationCount()).toBe(1);
+    expect(registrationNotifications).toHaveLength(1);
+    expect(registrationNotifications[0]).toMatchObject({ userId: "student-one", eventId: "paid-event" });
+
+    if (!configuredWebhookSecret) {
+      const unavailableWebhook = await request(checkoutApp)
+        .post("/api/payments/webhook")
+        .send({});
+      expect(unavailableWebhook.status).toBe(503);
+      expect(unavailableWebhook.body.error).toBe("Razorpay webhook verification is not configured");
+    }
   });
 
   it("requires a student, a published paid event, and available capacity", async () => {
@@ -366,6 +456,7 @@ describe("Razorpay event payments", () => {
       ).body.status,
     ).toBe(EventPaymentStatus.SUCCESSFUL);
     expect(repository.registrationCount()).toBe(1);
+    expect(registrationNotifications).toHaveLength(1);
   });
 
   it("does not register an authorized but uncaptured payment", async () => {
@@ -385,6 +476,7 @@ describe("Razorpay event payments", () => {
     });
     expect(result.body.status).toBe(EventPaymentStatus.PENDING);
     expect(repository.registrationCount()).toBe(0);
+    expect(registrationNotifications).toHaveLength(0);
   });
 
   it("rejects invalid raw-body webhook signatures and makes duplicate deliveries idempotent", async () => {
@@ -422,6 +514,7 @@ describe("Razorpay event payments", () => {
     expect((await deliver()).status).toBe(200);
     expect((await deliver()).status).toBe(200);
     expect(repository.registrationCount()).toBe(1);
+    expect(registrationNotifications).toHaveLength(1);
   });
 
   it("records provider-confirmed failures and creates a fresh order for a retry", async () => {
@@ -448,6 +541,7 @@ describe("Razorpay event payments", () => {
       .set("x-razorpay-signature", sign(webhookSecret, rawBody))
       .send(rawBody);
     expect(webhook.status).toBe(200);
+    expect(registrationNotifications).toHaveLength(0);
     expect(
       (await firstStudent.get(`/api/payments/${order.body.paymentAttemptId}`)).body.status,
     ).toBe(EventPaymentStatus.FAILED);
@@ -469,6 +563,7 @@ describe("Razorpay event payments", () => {
       .post(`/api/payments/${order.body.paymentAttemptId}/cancel`)
       .send({});
     expect(cancelled.body.status).toBe(EventPaymentStatus.CANCELLED);
+    expect(registrationNotifications).toHaveLength(0);
     const retry = await createOrder();
     expect(retry.status).toBe(201);
     expect(retry.body.paymentAttemptId).toBe(order.body.paymentAttemptId);

@@ -145,7 +145,11 @@ const environmentSchema = z.object({
   }
 });
 
-const parsedEnvironment = environmentSchema.safeParse(process.env);
+export function parseEnvironment(environment: NodeJS.ProcessEnv) {
+  return environmentSchema.safeParse(environment);
+}
+
+const parsedEnvironment = parseEnvironment(process.env);
 
 if (!parsedEnvironment.success) {
   throw new Error(`Invalid environment configuration: ${z.prettifyError(parsedEnvironment.error)}`);

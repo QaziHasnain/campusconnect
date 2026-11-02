@@ -12,13 +12,15 @@ Campus event information is often distributed across disconnected channels. Stud
 
 - Provide one place to find published campus events.
 - Let students create accounts, sign in, register for events, and review their registrations.
-- Let organizers create, edit, publish, unpublish, and delete their events.
+- Let organizers create, edit, publish, unpublish, cancel, and delete their events.
 - Enforce authentication, role checks, ownership, validation, and duplicate-registration prevention on the server.
 
 ## Features
 
 - Student registration and login with server-side sessions and email verification before account activation.
 - Published event browsing, category filtering, and event registration.
+- Organizer-created events with draft/published/cancelled states, attendee lists, and remaining-seat availability.
+- Event registration and cancellation notifications in the student's in-app notification centre.
 - Venue addresses and optional interactive Leaflet/OpenStreetMap maps with directions links.
 - Free or paid INR event tickets through Razorpay Standard Checkout in test mode only.
 - Registration list for the signed-in student.
@@ -33,10 +35,11 @@ Campus event information is often distributed across disconnected channels. Stud
   the Web Push API and a persistent PostgreSQL-backed worker.
 
 Dedicated event pages are available at `/events/:eventId`. They show the full description, category,
-event schedule, venue address, optional venue map and directions, ticket price, organizer name, and
-configured maximum capacity. Paid registrations are confirmed only after Razorpay reports a captured
-test payment. The API does not provide registration counts, so the interface does not estimate
-remaining availability.
+event schedule, venue address, optional venue map and directions, ticket price, organizer name,
+maximum capacity, and remaining seats when capacity is limited. Paid registrations are confirmed
+only after Razorpay reports a captured test payment. Organizers can view attendees and cancel an
+event; registrations remain in the database and affected students receive an in-app notification.
+CampusConnect does not process refunds.
 
 ## Technology stack
 
@@ -113,7 +116,7 @@ The Prisma schema is in `apps/api/prisma/schema.prisma`.
   retryable push outbox entries.
 - `Session`: PostgreSQL-backed Express session storage.
 
-Event categories are `TECHNOLOGY`, `CULTURAL`, `SPORTS`, `WORKSHOPS`, and `HACKATHONS`. Events can be `DRAFT` or `PUBLISHED`.
+Event categories are `TECHNOLOGY`, `CULTURAL`, `SPORTS`, `WORKSHOPS`, and `HACKATHONS`. Events can be `DRAFT`, `PUBLISHED`, or `CANCELLED`.
 
 ## Local setup
 
@@ -135,7 +138,7 @@ On Windows PowerShell, create the local environment file with:
 Copy-Item .env.example .env
 ```
 
-Edit `.env` locally. Set `DATABASE_URL` to your PostgreSQL database, set a random `SESSION_SECRET` of at least 32 characters, and leave `NODE_ENV=development` for local work. The API reads this file from the repository root. Do not commit `.env` or paste its contents into logs or issue reports.
+Edit `.env` locally. Set `DATABASE_URL` to your local PostgreSQL database and set a random `SESSION_SECRET` of at least 32 characters. The API reads this file from the repository root. Do not commit `.env` or paste its contents into logs or issue reports. Only the two variables marked required below are necessary for a basic local start; all optional integrations can remain disabled.
 
 | Variable | Required | Purpose |
 |---|---:|---|
@@ -145,7 +148,7 @@ Edit `.env` locally. Set `DATABASE_URL` to your PostgreSQL database, set a rando
 | `PORT` | No | API listen port; defaults to `3000` |
 | `FRONTEND_ORIGIN` | No | Exact browser origin allowed by credentialed CORS; defaults to `http://localhost:5173` |
 | `RAZORPAY_MODE` | No | `test` by default; live mode is disabled |
-| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | For paid checkout | Razorpay test credentials; secrets stay on the API. See [payments setup](./docs/payments-setup.md) |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | For paid checkout | Optional Razorpay Test Mode credentials; secrets stay on the API. See [payments setup](./docs/payments-setup.md) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | No | Configure all together to enable verification and reset email |
 | `WHATSAPP_ENABLED` | No | `false` by default; enable reminders only after provider setup and approval |
 | `WHATSAPP_PROVIDER` | No | `meta` by default; choose `meta` or `twilio` |
@@ -167,16 +170,25 @@ See [docs/email-setup.md](./docs/email-setup.md) for the complete SMTP and email
 
 ### Migrate and run
 
-Database migrations modify data structures. The venue/payment migration is additive and is not
-applied by this implementation. Before running any migration, verify that PostgreSQL reports
-`current_database() = campusconnect_test` on the same connection. Never apply this migration to the
-existing `CampusConnect` or `campusconnect_demo` databases.
+Database migrations change the schema. Check the connected database and migration status before
+choosing to apply them. The current codebase includes migrations for event cancellation and paid
+registration handling after cancellation; applied status depends on the selected database. Do not
+run a migration against a database whose contents you need to preserve. Migration execution is a
+deliberate, separate action.
 
 ```sh
+# Read-only status check
+cd apps/api
+npx prisma migrate status
+
+# Apply committed migrations to the explicitly selected local development database
 npm run db:migrate:dev -w apps/api
 ```
 
-Apply committed migrations only after the database identity check above:
+For an already prepared local database, `npm run db:migrate -w apps/api` applies committed
+migrations. Confirm the database identity on the same connection first. Never apply migrations to a
+shared or production database. PostgreSQL integration tests are guarded separately and must use the
+dedicated local `campusconnect_test` database.
 
 ```sh
 npm run db:migrate -w apps/api
@@ -263,7 +275,7 @@ npm test -w apps/web
 npm test
 ```
 
-The API tests run serially (`--maxWorkers=1`). PostgreSQL integration suites are opt-in with `RUN_DB_INTEGRATION_TESTS=true` and enforce their configured local database name; run them only against the dedicated local database named in the test. Browser and responsive checks are manual; an automated end-to-end browser suite is not currently configured. See [docs/release-readiness.md](./docs/release-readiness.md) for the latest verified checks and deployment blockers.
+The API tests run serially (`--maxWorkers=1`). PostgreSQL integration suites are opt-in with `RUN_DB_INTEGRATION_TESTS=true` and enforce the dedicated local database name; they are skipped by the default test command. Browser and responsive checks are manual; an automated end-to-end browser suite is not configured. Run the frontend tests with `npm test -w apps/web`, the backend tests with `npm test -w apps/api`, production builds with `npm run build`, and frontend lint with `npm run lint -w apps/web`.
 
 ## Screenshots and demo walkthrough
 
@@ -304,26 +316,16 @@ See [DEMO_GUIDE.md](./DEMO_GUIDE.md) for local workflow notes.
 - Password-reset responses do not reveal whether an email address is registered.
 - Helmet supplies common HTTP security headers, and credentialed CORS is restricted to the configured frontend origin.
 
-See [docs/release-readiness.md](./docs/release-readiness.md) for the dependency advisory and deployment security review. A currently reported Nodemailer advisory must be resolved before enabling SMTP in a public deployment.
+See [docs/release-readiness.md](./docs/release-readiness.md) for additional implementation notes.
 
 ## Known limitations
 
-- Remaining capacity is not shown because the public API does not return current registration counts.
-- SMTP is optional and must be configured for email-based password recovery outside local development.
-- PostgreSQL integration tests require a dedicated database and are not part of a safe default test run.
-- The hosted Render login/session issue remains unresolved; hosted authentication is not release-ready until that behavior is fixed and verified.
-- The repository contains no Render deployment manifest, so service settings must be confirmed in the Render dashboard.
-- Browser/responsive checks are manual; no automated end-to-end browser suite is configured.
-- Password-reset rate limits are process-local and are not shared across multiple API instances.
-
-## Roadmap
-
-- Resolve and regression-test production session handling behind Render's TLS proxy.
-- Upgrade Nodemailer to a non-vulnerable compatible release, then rerun the dependency audit before enabling SMTP.
-- Add automated browser tests for student, organizer, password-reset, and responsive workflows.
-- Move rate limiting to shared storage before scaling the API horizontally.
-- Define cancellation behavior and strengthen capacity/registration concurrency tests.
-- Add deployment health checks, structured operational logging, and email-delivery monitoring.
+- CampusConnect is a local college and portfolio project; deployment and multi-instance operation are outside its current scope.
+- Paid checkout requires optional Razorpay Test Mode credentials. Live payments are disabled, and the application does not issue refunds; organizers must arrange any refund manually.
+- Email delivery requires optional SMTP configuration. Without it, verification and reset links use the documented local development flow.
+- Browser push, WhatsApp reminders, and map tiles depend on optional configuration or external services. Maps require internet access for tile loading.
+- PostgreSQL integration suites require a dedicated local test database and are excluded from the default test run. Browser end-to-end and responsive checks are manual.
+- Notification delivery workers must be started separately when testing queued browser push or WhatsApp reminders.
 
 ## Architecture documentation
 

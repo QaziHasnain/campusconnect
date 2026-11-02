@@ -200,5 +200,57 @@ describe.skipIf(!runDatabaseIntegrationTests)("Registration API with PostgreSQL"
     });
     expect(capacityRegistrations).toHaveLength(1);
     expect([studentId, secondStudentId]).toContain(capacityRegistrations[0].userId);
+
+    const publicCapacity = await request(app).get(`/api/events/${capacityEventId}`);
+    expect(publicCapacity.body.event).toMatchObject({
+      capacity: 1,
+      registeredCount: 1,
+      remainingSeats: 0,
+    });
+    expect(publicCapacity.body.event).not.toHaveProperty("organizerId");
+    expect(JSON.stringify(publicCapacity.body)).not.toContain(studentId);
+    expect(JSON.stringify(publicCapacity.body)).not.toContain("userId");
+  }, 30_000);
+
+  it("lists owned attendees and cancels an event without removing registrations or duplicating notifications", async () => {
+    const eventId = await createEvent(EventStatus.PUBLISHED, 4);
+    expect((await student.post(`/api/events/${eventId}/register`)).status).toBe(201);
+    expect((await secondStudent.post(`/api/events/${eventId}/register`)).status).toBe(201);
+
+    const attendeeList = await organizer.get(`/api/events/${eventId}/attendees`);
+    expect(attendeeList.status).toBe(200);
+    expect(attendeeList.body).toMatchObject({
+      event: { id: eventId, status: "PUBLISHED", capacity: 4 },
+      totalRegistrations: 2,
+      availableCapacity: 2,
+    });
+    expect(attendeeList.body.attendees).toHaveLength(2);
+    expect(attendeeList.body.attendees[0]).toMatchObject({
+      registrationStatus: "CONFIRMED",
+      paymentStatus: "FREE",
+    });
+    expect(attendeeList.body.attendees[0]).not.toHaveProperty("userId");
+    expect(attendeeList.body.attendees[0]).not.toHaveProperty("paymentId");
+    expect((await student.get(`/api/events/${eventId}/attendees`)).status).toBe(403);
+    expect((await request(app).get(`/api/events/${eventId}/attendees`)).status).toBe(401);
+
+    const before = await prisma.registration.count({ where: { eventId } });
+    const firstCancellation = await organizer.post(`/api/events/${eventId}/cancel`).send({});
+    expect(firstCancellation.status).toBe(200);
+    expect(firstCancellation.body.newlyCancelled).toBe(true);
+    expect(firstCancellation.body.event.status).toBe("CANCELLED");
+    expect((await student.post(`/api/events/${eventId}/register`)).status).toBe(409);
+    expect((await request(app).get(`/api/events/${eventId}`)).body.event.status).toBe("CANCELLED");
+
+    const secondCancellation = await organizer.post(`/api/events/${eventId}/cancel`).send({});
+    expect(secondCancellation.status).toBe(200);
+    expect(secondCancellation.body.newlyCancelled).toBe(false);
+    expect(await prisma.registration.count({ where: { eventId } })).toBe(before);
+    expect(await prisma.notification.count({
+      where: { reminderKey: `event-cancellation:${eventId}:${studentId}` },
+    })).toBe(1);
+    expect(await prisma.notification.count({
+      where: { reminderKey: `event-cancellation:${eventId}:${secondStudentId}` },
+    })).toBe(1);
   }, 30_000);
 });

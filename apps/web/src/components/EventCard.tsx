@@ -10,6 +10,8 @@ import {
 } from 'lucide-react'
 import type { CampusEvent, EventCategory } from '../types/event'
 import { formatEventDate, formatEventShortDate } from '../lib/eventFormatting'
+import { formatTicketPrice } from '../lib/priceFormatting'
+import { formatRemainingSeats } from '../lib/eventAvailability'
 import { EventRegistrationControl } from './EventRegistrationControl'
 
 const categoryIcons: Record<EventCategory, LucideIcon> = {
@@ -45,6 +47,7 @@ export function EventCard({
       <div className="event-card-content">
         <div className="event-card-heading">
           <h3>{event.title}</h3>
+          {event.status === 'CANCELLED' && <span className="event-status event-status--cancelled">Cancelled</span>}
         </div>
         <p className="event-description">{event.description}</p>
         <div className="event-card-meta">
@@ -56,6 +59,14 @@ export function EventCard({
             <span className="sr-only">Venue: </span>
             {event.venue}
           </span>
+          <span className="event-ticket-price" aria-label={`Ticket price: ${formatTicketPrice(event.ticketPricePaise ?? null)}`}>
+            {formatTicketPrice(event.ticketPricePaise)}
+          </span>
+          {event.capacity != null && event.status !== 'CANCELLED' && (
+            <span className="event-seat-availability" role="status">
+              {formatRemainingSeats(event.remainingSeats)}
+            </span>
+          )}
           {event.organizerName && (
             <span className="event-organizer" title={`Organizer: ${event.organizerName}`}>
               By {event.organizerName}
@@ -65,7 +76,9 @@ export function EventCard({
         <Link className="event-detail-link" to={`/events/${encodeURIComponent(event.id)}`}>
           View details <span aria-hidden="true">→</span>
         </Link>
-        {registrationControl ? (
+        {event.status === 'CANCELLED' ? (
+          <p className="event-cancelled-notice" role="status">This event was cancelled. Registration is closed.</p>
+        ) : registrationControl ? (
           <div className="event-registration-control">{registrationControl}</div>
         ) : showRegistrationControl ? (
           <EventRegistrationControl

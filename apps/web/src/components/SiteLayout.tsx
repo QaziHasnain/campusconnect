@@ -7,13 +7,14 @@ import {
   X,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { Link, NavLink, useLocation } from 'react-router-dom'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { ApiError, getNotifications } from '../lib/api'
 
 export function SiteLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth()
   const location = useLocation()
+  const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState<string | null>(null)
@@ -60,6 +61,8 @@ export function SiteLayout({ children }: { children: ReactNode }) {
     setIsLoggingOut(true)
     try {
       await logout()
+      setUnreadNotifications(null)
+      navigate('/login', { replace: true })
     } catch (error) {
       setLogoutError(
         error instanceof ApiError && error.status >= 500

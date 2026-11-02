@@ -109,8 +109,10 @@ export const apiEventSchema = z.object({
   ticketPricePaise: z.number().int().positive().nullable(),
   startAt: z.iso.datetime(),
   endAt: z.iso.datetime().nullable(),
-  status: z.enum(['DRAFT', 'PUBLISHED']),
+  status: z.enum(['DRAFT', 'PUBLISHED', 'CANCELLED']),
   capacity: z.number().int().positive().nullable(),
+  registeredCount: z.number().int().nonnegative(),
+  remainingSeats: z.number().int().nonnegative().nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   organizer: z.object({ name: z.string() }),
@@ -122,6 +124,24 @@ export const eventListResponseSchema = z.object({
 
 export const eventResponseSchema = z.object({
   event: apiEventSchema,
+})
+
+export const organizerAttendeeListResponseSchema = z.object({
+  event: z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    status: z.enum(['DRAFT', 'PUBLISHED', 'CANCELLED']),
+    capacity: z.number().int().positive().nullable(),
+  }),
+  totalRegistrations: z.number().int().nonnegative(),
+  availableCapacity: z.number().int().nonnegative().nullable(),
+  attendees: z.array(z.object({
+    name: z.string(),
+    email: z.string().email(),
+    registeredAt: z.iso.datetime(),
+    registrationStatus: z.literal('CONFIRMED'),
+    paymentStatus: z.enum(['FREE', 'PENDING', 'SUCCESSFUL', 'FAILED', 'CANCELLED', 'REFUND_REQUIRED']),
+  })),
 })
 
 export const myRegistrationsResponseSchema = z.object({
@@ -187,7 +207,7 @@ export type NotificationPreferences = z.infer<typeof notificationPreferencesSche
 export type ApiEvent = z.infer<typeof apiEventSchema>
 export type ApiEventCategory = z.infer<typeof apiEventCategorySchema>
 
-export const paymentStatusSchema = z.enum(['PENDING', 'SUCCESSFUL', 'FAILED', 'CANCELLED'])
+export const paymentStatusSchema = z.enum(['PENDING', 'SUCCESSFUL', 'FAILED', 'CANCELLED', 'REFUND_REQUIRED'])
 
 export const paymentConfigResponseSchema = z.object({
   enabled: z.boolean(),
@@ -399,6 +419,21 @@ export function deleteOrganizerEvent(eventId: string) {
     `/api/events/${encodeURIComponent(eventId)}`,
     z.undefined(),
     { method: 'DELETE' },
+  )
+}
+
+export function getOrganizerEventAttendees(eventId: string) {
+  return apiRequest(
+    `/api/events/${encodeURIComponent(eventId)}/attendees`,
+    organizerAttendeeListResponseSchema,
+  )
+}
+
+export function cancelOrganizerEvent(eventId: string) {
+  return apiRequest(
+    `/api/events/${encodeURIComponent(eventId)}/cancel`,
+    eventResponseSchema.extend({ newlyCancelled: z.boolean() }),
+    { method: 'POST', body: JSON.stringify({}) },
   )
 }
 

@@ -21,6 +21,8 @@ import {
 } from '../lib/api'
 import type { ApiEvent } from '../lib/api'
 import { formatEventDateTime } from '../lib/eventFormatting'
+import { formatTicketPrice } from '../lib/priceFormatting'
+import { formatRemainingSeats, eventRegistrationChangedEvent } from '../lib/eventAvailability'
 import { getDirectionsUrl } from '../lib/venueMapUtils'
 import './PublicPages.css'
 
@@ -325,6 +327,15 @@ export function EventDetailsPage() {
     }
   }, [eventId, retry])
 
+  useEffect(() => {
+    const handleRegistrationChanged = (event: Event) => {
+      const changedEventId = (event as CustomEvent<{ eventId: string }>).detail?.eventId
+      if (changedEventId === eventId) setRetry((value) => value + 1)
+    }
+    window.addEventListener(eventRegistrationChangedEvent, handleRegistrationChanged)
+    return () => window.removeEventListener(eventRegistrationChangedEvent, handleRegistrationChanged)
+  }, [eventId])
+
   const isLoading = Boolean(eventId && loadedEvent?.eventId !== eventId)
   const event = loadedEvent && eventId && loadedEvent.eventId === eventId ? loadedEvent.event : null
   const error = !eventId
@@ -368,6 +379,7 @@ export function EventDetailsPage() {
         </div>
         <div className="event-detail-content">
           <span className="event-detail-category">{event.category}</span>
+          {event.status === 'CANCELLED' && <p className="event-cancelled-notice" role="status">This event was cancelled. Registration and new payment orders are closed. If you paid, contact the organizer about a manual refund; no refund has been issued by CampusConnect.</p>}
           <h1>{event.title}</h1>
           <div className="event-detail-meta">
             <p><CalendarDays size={18} aria-hidden="true" /><span><strong>Date and time</strong>{formatEventDateTime(event.startAt)}{event.endAt ? ` — ${formatEventDateTime(event.endAt)}` : ''}</span></p>
@@ -379,9 +391,10 @@ export function EventDetailsPage() {
             {event.capacity !== null && (
               <p><UsersRound size={18} aria-hidden="true" /><span><strong>Maximum capacity</strong>{event.capacity} attendees</span></p>
             )}
-            <p><Check size={18} aria-hidden="true" /><span><strong>Ticket</strong>{event.ticketPricePaise === null
-              ? 'Free'
-              : new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(event.ticketPricePaise / 100)}</span></p>
+            {event.capacity !== null && event.status !== 'CANCELLED' && (
+              <p className="event-seat-availability" role="status"><UsersRound size={18} aria-hidden="true" /><span><strong>Availability</strong>{formatRemainingSeats(event.remainingSeats)}</span></p>
+            )}
+            <p><Check size={18} aria-hidden="true" /><span><strong>Ticket</strong>{formatTicketPrice(event.ticketPricePaise)}</span></p>
           </div>
           {(event.latitude !== null && event.longitude !== null) && (
             <section className="event-venue-map" aria-labelledby="event-map-title">
@@ -419,13 +432,13 @@ export function EventDetailsPage() {
             <h2 id="event-description-title">About this event</h2>
             <p>{event.description}</p>
           </section>
-          <div className="event-detail-register">
+          {event.status === 'CANCELLED' ? null : <div className="event-detail-register">
             <EventRegistrationControl
               eventId={event.id}
               eventTitle={event.title}
               ticketPricePaise={event.ticketPricePaise}
             />
-          </div>
+          </div>}
         </div>
       </article>
     </main>

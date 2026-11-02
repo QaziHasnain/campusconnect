@@ -441,6 +441,27 @@ describe("Auth API without PostgreSQL (injected repository and test-only session
     expect(responses[5].headers["retry-after"]).toBeDefined();
   });
 
+  it("limits repeated password login attempts by IP and account", async () => {
+    const request = (await import("supertest")).default;
+    const { createApp } = await import("./app.js");
+    const limitedApp = createApp({
+      authRepository: repository,
+      sessionStore: new MemoryStore(),
+    });
+
+    const responses = [];
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      responses.push(await request(limitedApp).post("/api/auth/login").send({
+        email: "brute-force-target@example.com",
+        password: "incorrect-password",
+      }));
+    }
+
+    expect(responses.slice(0, 10).every((response) => response.status === 401)).toBe(true);
+    expect(responses[10].status).toBe(429);
+    expect(responses[10].headers["retry-after"]).toBeDefined();
+  });
+
   it("keeps email delivery failures indistinguishable from unknown addresses", async () => {
     const request = (await import("supertest")).default;
     const { createApp } = await import("./app.js");

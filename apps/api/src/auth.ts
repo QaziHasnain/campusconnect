@@ -207,6 +207,18 @@ export function createAuthRouter(
       `email:${typeof request.body?.email === "string" ? request.body.email.trim().toLowerCase() : ""}`,
     ],
   );
+  const loginIpLimiter = createRateLimiter(
+    30,
+    15 * 60 * 1000,
+    (request) => [`ip:${request.ip ?? "unknown"}`],
+  );
+  const loginAccountLimiter = createRateLimiter(
+    10,
+    15 * 60 * 1000,
+    (request) => [
+      `ip-email:${request.ip ?? "unknown"}:${typeof request.body?.email === "string" ? request.body.email.trim().toLowerCase() : ""}`,
+    ],
+  );
 
   router.post("/register", async (request, response) => {
     const parsed = registerSchema.safeParse(request.body);
@@ -332,7 +344,7 @@ export function createAuthRouter(
     }
   });
 
-  router.post("/login", async (request, response) => {
+  router.post("/login", loginIpLimiter, loginAccountLimiter, async (request, response) => {
     const parsed = loginSchema.safeParse(request.body);
 
     if (!parsed.success) {

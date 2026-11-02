@@ -30,10 +30,14 @@ export function toCampusEvent(event: ApiEvent): CampusEvent {
 
   return {
     id: event.id,
+    status: event.status,
     title: event.title,
     date: event.startAt,
     venue: event.venue,
     ticketPricePaise: event.ticketPricePaise,
+    capacity: event.capacity,
+    registeredCount: event.registeredCount,
+    remainingSeats: event.remainingSeats,
     category,
     description: event.description,
     artwork: categoryArtwork[category],

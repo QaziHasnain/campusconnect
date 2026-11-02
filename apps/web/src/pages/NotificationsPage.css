@@ -364,7 +364,7 @@
   }
 
   .notification-item {
-    grid-template-columns: 34px minmax(0, 1fr) 32px;
+    grid-template-columns: 34px minmax(0, 1fr) 44px;
     gap: 9px;
     padding-inline: 1px;
   }
@@ -375,7 +375,7 @@
   }
 
   .notification-read-button {
-    width: 30px;
-    height: 30px;
+    width: 44px;
+    height: 44px;
   }
 }

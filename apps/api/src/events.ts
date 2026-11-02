@@ -9,9 +9,15 @@ import {
   type Prisma,
   type PrismaClient,
 } from "./generated/prisma/client.js";
-import { queueEventUpdateNotifications } from "./notifications.js";
+import {
+  queueEventCancellationNotifications,
+  queueEventUpdateNotifications,
+} from "./notifications.js";
 
-const eventSelect = {
+export type RegistrationNotifier = (input: { userId: string; eventId: string; registrationId: string }) => Promise<void>;
+
+function eventSelect() {
+  return {
   id: true,
   title: true,
   description: true,
@@ -29,10 +35,37 @@ const eventSelect = {
   createdAt: true,
   updatedAt: true,
   organizer: { select: { name: true } },
-} satisfies Prisma.EventSelect;
+  _count: {
+    select: {
+      registrations: true,
+      paymentAttempts: {
+        where: {
+          status: { in: [EventPaymentStatus.PENDING, EventPaymentStatus.CANCELLED] },
+          expiresAt: { gt: new Date() },
+        },
+      },
+    },
+  },
+  } satisfies Prisma.EventSelect;
+}
 
-export type EventRecord = Prisma.EventGetPayload<{ select: typeof eventSelect }>;
-export type PublicEvent = Omit<EventRecord, "organizerId">;
+type PrismaEventRecord = Prisma.EventGetPayload<{ select: ReturnType<typeof eventSelect> }>;
+export type EventRecord = Omit<PrismaEventRecord, "_count"> & {
+  registeredCount: number;
+  activePaymentReservationCount: number;
+};
+export type PublicEvent = Omit<EventRecord, "organizerId" | "activePaymentReservationCount"> & {
+  remainingSeats: number | null;
+};
+
+function toEventRecord(event: PrismaEventRecord): EventRecord {
+  const { _count, ...record } = event;
+  return {
+    ...record,
+    registeredCount: _count.registrations,
+    activePaymentReservationCount: _count.paymentAttempts,
+  };
+}
 
 const registrationSelect = {
   id: true,
@@ -44,19 +77,40 @@ const registrationSelect = {
 export type RegistrationRecord = Prisma.RegistrationGetPayload<{
   select: typeof registrationSelect;
 }>;
-const registrationWithEventSelect = {
-  id: true,
-  eventId: true,
-  createdAt: true,
-  event: { select: eventSelect },
-} satisfies Prisma.RegistrationSelect;
+function registrationWithEventSelect() {
+  return {
+    id: true,
+    eventId: true,
+    createdAt: true,
+    event: { select: eventSelect() },
+  } satisfies Prisma.RegistrationSelect;
+}
 
-export type RegistrationWithEventRecord = Prisma.RegistrationGetPayload<{
-  select: typeof registrationWithEventSelect;
+type PrismaRegistrationWithEventRecord = Prisma.RegistrationGetPayload<{
+  select: ReturnType<typeof registrationWithEventSelect>;
 }>;
+export type RegistrationWithEventRecord = Omit<PrismaRegistrationWithEventRecord, "event"> & {
+  event: EventRecord;
+};
+
+export interface OrganizerAttendee {
+  name: string;
+  email: string;
+  registeredAt: Date;
+  registrationStatus: "CONFIRMED";
+  paymentStatus: EventPaymentStatus | "FREE";
+}
+
+export interface OrganizerAttendeeList {
+  event: { id: string; title: string; status: EventStatus; capacity: number | null };
+  totalRegistrations: number;
+  availableCapacity: number | null;
+  attendees: OrganizerAttendee[];
+}
 export type RegistrationResult =
   | { status: "created"; registration: RegistrationRecord }
   | { status: "not_found" }
+  | { status: "cancelled" }
   | { status: "duplicate" }
   | { status: "capacity_reached" }
   | { status: "paid_event" };
@@ -104,6 +158,11 @@ export interface EventRepository {
   listPublished(filters: EventFilters): Promise<EventRecord[]>;
   listOwned(organizerId: string): Promise<EventRecord[]>;
   findPublishedById(id: string): Promise<EventRecord | null>;
+  listOwnedAttendees(eventId: string, organizerId: string): Promise<OrganizerAttendeeList | null>;
+  cancelOwned(
+    eventId: string,
+    organizerId: string,
+  ): Promise<{ event: EventRecord; newlyCancelled: boolean } | null>;
   findById(id: string): Promise<EventRecord | null>;
   findUserRole(userId: string): Promise<UserRole | null>;
   registerForEvent(eventId: string, userId: string): Promise<RegistrationResult>;
@@ -119,7 +178,7 @@ export function createPrismaEventRepository(prisma: PrismaClient): EventReposito
     listPublished: (filters) =>
       prisma.event.findMany({
         where: {
-          status: EventStatus.PUBLISHED,
+          status: { in: [EventStatus.PUBLISHED, EventStatus.CANCELLED] },
           ...(filters.category ? { category: filters.category } : {}),
           ...(filters.search
             ? {
@@ -132,20 +191,103 @@ export function createPrismaEventRepository(prisma: PrismaClient): EventReposito
             : {}),
         },
         orderBy: { startAt: "asc" },
-        select: eventSelect,
-      }),
-    listOwned: (organizerId) =>
-      prisma.event.findMany({
+        select: eventSelect(),
+      }).then((events) => events.map(toEventRecord)),
+    listOwned: async (organizerId) =>
+      (await prisma.event.findMany({
         where: { organizerId },
         orderBy: { startAt: "asc" },
-        select: eventSelect,
+        select: eventSelect(),
+      })).map(toEventRecord),
+    findPublishedById: async (id) => {
+      const event = await prisma.event.findFirst({
+        where: { id, status: { in: [EventStatus.PUBLISHED, EventStatus.CANCELLED] } },
+        select: eventSelect(),
+      });
+      return event ? toEventRecord(event) : null;
+    },
+    listOwnedAttendees: async (eventId, organizerId) => {
+      const event = await prisma.event.findFirst({
+        where: { id: eventId, organizerId },
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          capacity: true,
+          registrations: {
+            orderBy: { createdAt: "desc" },
+            select: {
+              createdAt: true,
+              user: { select: { name: true, email: true, role: true } },
+              paymentAttempt: { select: { status: true } },
+            },
+          },
+          _count: {
+            select: {
+              paymentAttempts: {
+                where: {
+                  status: { in: [EventPaymentStatus.PENDING, EventPaymentStatus.CANCELLED] },
+                  expiresAt: { gt: new Date() },
+                },
+              },
+            },
+          },
+        },
+      });
+      if (!event) return null;
+      const totalRegistrations = event.registrations.length;
+      const attendees = event.registrations
+        .filter(({ user }) => user.role === UserRole.STUDENT)
+        .map(({ user, createdAt, paymentAttempt }) => ({
+          name: user.name,
+          email: user.email,
+          registeredAt: createdAt,
+          registrationStatus: "CONFIRMED" as const,
+          paymentStatus: paymentAttempt?.status ?? ("FREE" as const),
+        }));
+      return {
+        event: { id: event.id, title: event.title, status: event.status, capacity: event.capacity },
+        totalRegistrations,
+        availableCapacity:
+          event.status === EventStatus.CANCELLED
+            ? 0
+            : event.capacity === null
+              ? null
+              : Math.max(0, event.capacity - totalRegistrations - event._count.paymentAttempts),
+        attendees,
+      };
+    },
+    cancelOwned: async (eventId, organizerId) =>
+      prisma.$transaction(async (transaction) => {
+        const locked = await transaction.$queryRaw<{ id: string }[]>`
+          SELECT "id" FROM "Event"
+          WHERE "id" = ${eventId} AND "organizerId" = ${organizerId}
+          FOR UPDATE
+        `;
+        if (locked.length === 0) return null;
+
+        const existing = await transaction.event.findUnique({
+          where: { id: eventId },
+          select: { status: true, title: true },
+        });
+        if (!existing) return null;
+        if (existing.status === EventStatus.CANCELLED) {
+          const event = await transaction.event.findUnique({ where: { id: eventId }, select: eventSelect() });
+          return event ? { event: toEventRecord(event), newlyCancelled: false } : null;
+        }
+
+        await transaction.event.update({
+          where: { id: eventId },
+          data: { status: EventStatus.CANCELLED },
+        });
+        await queueEventCancellationNotifications(transaction, eventId, existing.title);
+        const event = await transaction.event.findUnique({ where: { id: eventId }, select: eventSelect() });
+        return event ? { event: toEventRecord(event), newlyCancelled: true } : null;
       }),
-    findPublishedById: (id) =>
-      prisma.event.findFirst({
-        where: { id, status: EventStatus.PUBLISHED },
-        select: eventSelect,
-      }),
-    findById: (id) => prisma.event.findUnique({ where: { id }, select: eventSelect }),
+    findById: async (id) => {
+      const event = await prisma.event.findUnique({ where: { id }, select: eventSelect() });
+      return event ? toEventRecord(event) : null;
+    },
     findUserRole: async (userId) =>
       (await prisma.user.findUnique({ where: { id: userId }, select: { role: true } }))?.role ?? null,
     registerForEvent: (eventId, userId) =>
@@ -158,7 +300,9 @@ export function createPrismaEventRepository(prisma: PrismaClient): EventReposito
           where: { id: eventId },
           select: { status: true, capacity: true, ticketPricePaise: true },
         });
-        if (!event || event.status !== EventStatus.PUBLISHED) return { status: "not_found" };
+        if (!event) return { status: "not_found" };
+        if (event.status === EventStatus.CANCELLED) return { status: "cancelled" };
+        if (event.status !== EventStatus.PUBLISHED) return { status: "not_found" };
         if (event.ticketPricePaise !== null) return { status: "paid_event" };
 
         const existing = await transaction.registration.findUnique({
@@ -198,33 +342,35 @@ export function createPrismaEventRepository(prisma: PrismaClient): EventReposito
       });
       return registration !== null;
     },
-    listUserRegistrations: (userId) =>
-      prisma.registration.findMany({
+    listUserRegistrations: async (userId) =>
+      (await prisma.registration.findMany({
         where: { userId },
         orderBy: { createdAt: "desc" },
-        select: registrationWithEventSelect,
-      }),
-    create: (data) => prisma.event.create({ data, select: eventSelect }),
+        select: registrationWithEventSelect(),
+      })).map(({ event, ...registration }) => ({ ...registration, event: toEventRecord(event) })),
+    create: async (data) => toEventRecord(await prisma.event.create({ data, select: eventSelect() })),
     updateOwned: (id, organizerId, data) =>
       prisma.$transaction(async (transaction) => {
         const existing = await transaction.event.findFirst({
-          where: { id, organizerId },
+          where: { id, organizerId, status: { in: [EventStatus.DRAFT, EventStatus.PUBLISHED] } },
           select: { id: true },
         });
         if (!existing) return null;
 
         const result = await transaction.event.updateMany({
-          where: { id, organizerId },
+          where: { id, organizerId, status: { in: [EventStatus.DRAFT, EventStatus.PUBLISHED] } },
           data,
         });
         if (result.count === 0) return null;
 
-        const event = await transaction.event.findUnique({ where: { id }, select: eventSelect });
+        const event = await transaction.event.findUnique({ where: { id }, select: eventSelect() });
         if (event) await queueEventUpdateNotifications(transaction, id);
-        return event;
+        return event ? toEventRecord(event) : null;
       }),
     deleteOwned: async (id, organizerId) => {
-      const result = await prisma.event.deleteMany({ where: { id, organizerId } });
+      const result = await prisma.event.deleteMany({
+        where: { id, organizerId, status: { in: [EventStatus.DRAFT, EventStatus.PUBLISHED] } },
+      });
       return result.count > 0;
     },
   };
@@ -290,7 +436,7 @@ const updateEventSchema = z
     ticketPricePaise: eventFieldsSchema.ticketPricePaise.optional(),
     startAt: eventFieldsSchema.startAt.optional(),
     endAt: eventFieldsSchema.endAt.optional(),
-    status: z.enum(EventStatus).optional(),
+    status: z.enum([EventStatus.DRAFT, EventStatus.PUBLISHED]).optional(),
     capacity: eventFieldsSchema.capacity.optional(),
   })
   .strict()
@@ -329,8 +475,18 @@ const listEventsQuerySchema = z
 const eventIdSchema = z.string().min(1).max(128);
 
 function toPublicEvent(event: EventRecord): PublicEvent {
-  const { organizerId: _organizerId, ...publicEvent } = event;
-  return publicEvent;
+  const {
+    organizerId: _organizerId,
+    activePaymentReservationCount,
+    ...publicEvent
+  } = event;
+  return {
+    ...publicEvent,
+    remainingSeats:
+      event.capacity === null
+        ? null
+        : Math.max(0, event.capacity - event.registeredCount - activePaymentReservationCount),
+  };
 }
 
 function sendValidationError(response: Response, message: string, error: z.ZodError) {
@@ -384,7 +540,7 @@ function toPublicRegistration(registration: RegistrationRecord) {
   };
 }
 
-export function createEventRouter(repository: EventRepository) {
+export function createEventRouter(repository: EventRepository, notifyRegistration?: RegistrationNotifier) {
   const router = Router();
 
   router.get("/mine", async (request, response) => {
@@ -396,6 +552,22 @@ export function createEventRouter(repository: EventRepository) {
       return response.json({ events: events.map(toPublicEvent) });
     } catch (error) {
       return sendServerError(response, "organizer event listing", error);
+    }
+  });
+
+  router.get("/:id/attendees", async (request, response) => {
+    const organizerId = await requireRole(request, response, repository, UserRole.ORGANIZER);
+    if (!organizerId) return;
+
+    const parsedId = eventIdSchema.safeParse(request.params.id);
+    if (!parsedId.success) return sendValidationError(response, "Invalid event ID", parsedId.error);
+
+    try {
+      const attendees = await repository.listOwnedAttendees(parsedId.data, organizerId);
+      if (!attendees) return response.status(404).json({ error: "Event not found" });
+      return response.json(attendees);
+    } catch (error) {
+      return sendServerError(response, "attendee listing", error);
     }
   });
 
@@ -441,6 +613,9 @@ export function createEventRouter(repository: EventRepository) {
       if (result.status === "not_found") {
         return response.status(404).json({ error: "Event not found" });
       }
+      if (result.status === "cancelled") {
+        return response.status(409).json({ error: "Event has been cancelled" });
+      }
       if (result.status === "duplicate") {
         return response.status(409).json({ error: "Already registered for this event" });
       }
@@ -449,6 +624,13 @@ export function createEventRouter(repository: EventRepository) {
       }
       if (result.status === "paid_event") {
         return response.status(409).json({ error: "Payment is required for this event" });
+      }
+      if (notifyRegistration) {
+        try {
+          await notifyRegistration({ userId, eventId: parsedId.data, registrationId: result.registration.id });
+        } catch (error) {
+          console.error("Registration notification failed", { errorType: error instanceof Error ? error.name : "UnknownError" });
+        }
       }
       return response.status(201).json({
         registration: toPublicRegistration(result.registration),
@@ -519,6 +701,9 @@ export function createEventRouter(repository: EventRepository) {
       if (existing.organizerId !== organizerId) {
         return response.status(403).json({ error: "You may only modify your own events" });
       }
+      if (existing.status === EventStatus.CANCELLED) {
+        return response.status(409).json({ error: "Cancelled events cannot be edited" });
+      }
 
       const nextStartAt = parsed.data.startAt ?? existing.startAt;
       const nextEndAt =
@@ -548,6 +733,29 @@ export function createEventRouter(repository: EventRepository) {
     }
   });
 
+  router.post("/:id/cancel", async (request, response) => {
+    const organizerId = await requireRole(request, response, repository, UserRole.ORGANIZER);
+    if (!organizerId) return;
+
+    const parsedId = eventIdSchema.safeParse(request.params.id);
+    if (!parsedId.success) return sendValidationError(response, "Invalid event ID", parsedId.error);
+    const parsedBody = z.object({}).strict().safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return sendValidationError(response, "Invalid cancellation request", parsedBody.error);
+    }
+
+    try {
+      const result = await repository.cancelOwned(parsedId.data, organizerId);
+      if (!result) return response.status(404).json({ error: "Event not found" });
+      return response.json({
+        event: toPublicEvent(result.event),
+        newlyCancelled: result.newlyCancelled,
+      });
+    } catch (error) {
+      return sendServerError(response, "cancellation", error);
+    }
+  });
+
   router.delete("/:id", async (request, response) => {
     const organizerId = await requireRole(request, response, repository, UserRole.ORGANIZER);
     if (!organizerId) return;
@@ -560,6 +768,9 @@ export function createEventRouter(repository: EventRepository) {
       if (!existing) return response.status(404).json({ error: "Event not found" });
       if (existing.organizerId !== organizerId) {
         return response.status(403).json({ error: "You may only modify your own events" });
+      }
+      if (existing.status === EventStatus.CANCELLED) {
+        return response.status(409).json({ error: "Cancelled events cannot be deleted" });
       }
 
       const deleted = await repository.deleteOwned(parsedId.data, organizerId);

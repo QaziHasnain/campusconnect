@@ -20,6 +20,7 @@ import {
 import {
   createNotificationRouter,
   createPrismaNotificationRepository,
+  createRegistrationConfirmation,
   type NotificationRepository,
 } from "./notifications.js";
 import { pool } from "./db.js";
@@ -170,6 +171,7 @@ export function createApp(options: {
   paymentGateway?: PaymentGateway | null;
   paymentConfiguration?: PaymentConfiguration;
   sessionStore?: Store;
+  notifyRegistration?: (input: { userId: string; eventId: string; registrationId: string }) => Promise<void>;
 } = {}) {
   const app = express();
   const sessionStore =
@@ -187,11 +189,25 @@ export function createApp(options: {
   const paymentGateway =
     options.paymentGateway ??
     createRazorpayGateway(paymentConfiguration, paymentConfiguration.keySecret);
+  const notifyRegistration = options.notifyRegistration ?? (async (input: { userId: string; eventId: string; registrationId: string }) => {
+    const event = await prisma.event.findUnique({
+      where: { id: input.eventId },
+      select: { title: true, startAt: true },
+    });
+    if (!event) return;
+    await createRegistrationConfirmation(prisma, { ...input, eventTitle: event.title, startAt: event.startAt });
+  });
 
   app.use(helmet());
   app.use(
     cors({
-      origin: env.frontendOrigin,
+      origin: (origin, callback) => {
+        const isLocalDevelopmentOrigin =
+          env.nodeEnv === "development" &&
+          origin !== undefined &&
+          /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d{1,5})?$/.test(origin);
+        callback(null, origin === env.frontendOrigin || isLocalDevelopmentOrigin);
+      },
       credentials: true,
     }),
   );
@@ -215,9 +231,26 @@ export function createApp(options: {
       },
     }),
   );
+  app.use("/api", (request, response, next) => {
+    const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method);
+    if (!isMutation || request.path === "/payments/webhook") return next();
+
+    const origin = request.get("Origin");
+    const isLocalDevelopmentOrigin =
+      env.nodeEnv === "development" &&
+      origin !== undefined &&
+      /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d{1,5})?$/.test(origin);
+    const isAllowedOrigin = origin === env.frontendOrigin || isLocalDevelopmentOrigin;
+    const fetchSite = request.get("Sec-Fetch-Site");
+
+    if ((origin !== undefined && !isAllowedOrigin) || (!origin && fetchSite === "cross-site")) {
+      return response.status(403).json({ error: "Cross-origin request rejected" });
+    }
+    return next();
+  });
   app.use(
     "/api/payments",
-    createPaymentRouter(paymentRepository, paymentGateway, paymentConfiguration),
+    createPaymentRouter(paymentRepository, paymentGateway, paymentConfiguration, notifyRegistration),
   );
   app.use(express.json());
   app.use(
@@ -226,7 +259,7 @@ export function createApp(options: {
   );
   app.use(
     "/api/events",
-    createEventRouter(eventRepository),
+    createEventRouter(eventRepository, notifyRegistration),
   );
   app.use("/api/me", createMeRouter(eventRepository));
   app.use(

@@ -98,6 +98,35 @@ export function hashPushEndpoint(endpoint: string): string {
   return createHash("sha256").update(endpoint).digest("hex");
 }
 
+/** Best-effort callers can persist a single confirmation per registration without a schema change. */
+export async function createRegistrationConfirmation(
+  prisma: PrismaClient,
+  input: { registrationId: string; userId: string; eventId: string; eventTitle: string; startAt: Date },
+) {
+  const preference = await prisma.notificationPreference.findUnique({
+    where: { userId: input.userId },
+    select: { inAppEnabled: true },
+  });
+  if (preference?.inAppEnabled === false) return;
+  const date = new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "UTC",
+  }).format(input.startAt);
+  await prisma.notification.createMany({
+    data: [{
+      userId: input.userId,
+      title: "Registration confirmed",
+      message: `Your registration for ${input.eventTitle} on ${date} is confirmed.`,
+      type: NotificationType.EVENT_UPDATE,
+      relatedEventId: input.eventId,
+      reminderKey: `registration-confirmation:${input.registrationId}`,
+      showInApp: true,
+    }],
+    skipDuplicates: true,
+  });
+}
+
 export function encryptPushSubscription(
   subscription: PushSubscriptionPayload,
   encryptionKey: Buffer,
@@ -504,6 +533,72 @@ export async function queueEventUpdateNotifications(
         notification.id,
         user.pushSubscriptions.map(({ id }) => id),
       );
+    }
+  }
+}
+
+export async function queueEventCancellationNotifications(
+  transaction: Prisma.TransactionClient,
+  eventId: string,
+  eventTitle: string,
+): Promise<void> {
+  const registrations = await transaction.registration.findMany({
+    where: {
+      eventId,
+      user: { is: { role: UserRole.STUDENT } },
+    },
+    select: {
+      user: {
+        select: {
+          id: true,
+          notificationPreference: { select: preferenceSelect },
+          pushSubscriptions: { select: { id: true } },
+        },
+      },
+    },
+  });
+
+  const notificationRecipients = registrations.flatMap(({ user }) => {
+    const preferences = user.notificationPreference;
+    if (!(preferences?.eventUpdatesEnabled ?? true)) return [];
+    const inAppEnabled = preferences?.inAppEnabled ?? true;
+    const pushEnabled = preferences?.pushEnabled ?? false;
+    if (!inAppEnabled && (!pushEnabled || user.pushSubscriptions.length === 0)) return [];
+    return [{
+      userId: user.id,
+      inAppEnabled,
+      pushSubscriptionIds: pushEnabled ? user.pushSubscriptions.map(({ id }) => id) : [],
+      reminderKey: `event-cancellation:${eventId}:${user.id}`,
+    }];
+  });
+  if (notificationRecipients.length === 0) return;
+
+  await transaction.notification.createMany({
+    data: notificationRecipients.map((recipient) => ({
+      userId: recipient.userId,
+      title: "Event cancelled",
+      message: `${eventTitle} has been cancelled. No refund has been initiated. If you paid, contact the organizer about a manual refund.`,
+      type: NotificationType.EVENT_UPDATE,
+      relatedEventId: eventId,
+      reminderKey: recipient.reminderKey,
+      showInApp: recipient.inAppEnabled,
+    })),
+    skipDuplicates: true,
+  });
+
+  const notifications = await transaction.notification.findMany({
+    where: { reminderKey: { in: notificationRecipients.map(({ reminderKey }) => reminderKey) } },
+    select: { id: true, reminderKey: true },
+  });
+  const recipientsByKey = new Map(
+    notificationRecipients.map((recipient) => [recipient.reminderKey, recipient]),
+  );
+  for (const notification of notifications) {
+    const recipient = notification.reminderKey
+      ? recipientsByKey.get(notification.reminderKey)
+      : undefined;
+    if (recipient?.pushSubscriptionIds.length) {
+      await queuePushDeliveries(transaction, notification.id, recipient.pushSubscriptionIds);
     }
   }
 }

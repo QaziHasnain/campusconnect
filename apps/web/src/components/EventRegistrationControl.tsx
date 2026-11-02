@@ -12,6 +12,7 @@ import {
   verifyEventPayment,
 } from '../lib/api'
 import type { PaymentStatus } from '../lib/api'
+import { notifyEventRegistrationChanged } from '../lib/eventAvailability'
 
 interface RazorpayCheckoutResult {
   razorpay_payment_id: string
@@ -98,6 +99,9 @@ function getRegistrationErrorMessage(error: unknown) {
     if (error.status === 404) return 'This event is no longer available for registration.'
     if (error.status === 409 && error.message === 'Event is full') {
       return 'This event is full and can no longer accept registrations.'
+    }
+    if (error.status === 409 && error.message === 'Event has been cancelled') {
+      return 'This event was cancelled. Registration is closed.'
     }
     if (error.status >= 500) return 'The service is temporarily unavailable. Please try again.'
   }
@@ -227,6 +231,9 @@ export function EventRegistrationControl({
     if (result.status === 'SUCCESSFUL') {
       setRegistered(true)
       setMessage('Payment successful. Your registration is confirmed.')
+      notifyEventRegistrationChanged(eventId)
+    } else if (result.status === 'REFUND_REQUIRED') {
+      setMessage('Payment was captured after event cancellation. No refund has been issued. Contact the organizer about a manual refund.')
     }
     return result.status
   }
@@ -249,11 +256,15 @@ export function EventRegistrationControl({
     try {
       await registerForEvent(eventId)
       setRegistered(true)
+      notifyEventRegistrationChanged(eventId)
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         if (error.message === 'Event is full') {
           setRegistered(false)
           setMessage('This event is full and can no longer accept registrations.')
+        } else if (error.message === 'Event has been cancelled') {
+          setRegistered(false)
+          setMessage('This event was cancelled. Registration is closed.')
         } else if (error.message === 'Already registered for this event') {
           setRegistered(true)
           setMessage('You are already registered for this event.')
@@ -315,6 +326,9 @@ export function EventRegistrationControl({
               if (status === 'SUCCESSFUL') {
                 setRegistered(true)
                 setMessage('Payment successful. Your registration is confirmed.')
+                notifyEventRegistrationChanged(eventId)
+              } else if (status === 'REFUND_REQUIRED') {
+                setMessage('Payment was captured after event cancellation. No refund has been issued. Contact the organizer about a manual refund.')
               } else {
                 setMessage('Payment is being confirmed. Check its status before trying again.')
               }
@@ -342,7 +356,7 @@ export function EventRegistrationControl({
     } catch (error) {
       setMessage(paymentErrorMessage(error))
       setRequiresSignIn(error instanceof ApiError && error.status === 401)
-      if (error instanceof ApiError && error.status === 409) {
+      if (error instanceof ApiError && error.status === 409 && error.message !== 'Event has been cancelled') {
         setPaymentStatus('FAILED')
       }
     } finally {
@@ -389,11 +403,13 @@ export function EventRegistrationControl({
               className="button registration-button"
               type="button"
               onClick={() => void handlePayment()}
-              disabled={isSubmitting}
+              disabled={isSubmitting || paymentStatus === 'REFUND_REQUIRED'}
               aria-label={`Pay ${formatPrice(ticketPricePaise)} and register for ${eventTitle}`}
             >
               {isSubmitting
                 ? 'Opening checkout…'
+                : paymentStatus === 'REFUND_REQUIRED'
+                  ? 'Payment captured'
                 : paymentStatus === 'FAILED' || paymentStatus === 'CANCELLED'
                   ? `Retry · ${formatPrice(ticketPricePaise)}`
                   : `${compact ? 'Pay' : 'Pay and register'} · ${formatPrice(ticketPricePaise)}`}
@@ -405,7 +421,7 @@ export function EventRegistrationControl({
           )}
           {paymentStatus && (
             <span className={`payment-status payment-status--${paymentStatus.toLowerCase()}`} role="status">
-              Payment {paymentStatus.toLowerCase()}
+              {paymentStatus === 'REFUND_REQUIRED' ? 'Manual refund required' : `Payment ${paymentStatus.toLowerCase()}`}
             </span>
           )}
           {paymentAttemptId && paymentStatus === 'PENDING' && (

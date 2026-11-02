@@ -3,6 +3,7 @@ import { Router, type Request, type Response } from "express";
 import express from "express";
 import Razorpay from "razorpay";
 import { z } from "zod";
+import type { RegistrationNotifier } from "./events.js";
 import {
   EventPaymentStatus,
   EventStatus,
@@ -83,7 +84,7 @@ export function getPaymentConfiguration(settings: RazorpaySettings): PaymentConf
       message: "Razorpay test-mode credentials are not configured.",
     };
   }
-  if (!settings.keySecret || !settings.webhookSecret) {
+  if (!settings.keySecret) {
     return {
       enabled: false,
       keyId: null,
@@ -147,6 +148,7 @@ type ReservationResult =
   | {
       status:
         | "not_found"
+        | "event_cancelled"
         | "free_event"
         | "already_registered"
         | "capacity_reached"
@@ -169,13 +171,14 @@ export interface PaymentRepository {
     attemptId: string,
     payment: ProviderPayment,
   ): Promise<
-    "successful" | "pending" | "already_registered" | "capacity_reached" | "expired" | "mismatch"
+    "successful" | "pending" | "already_registered" | "capacity_reached" | "expired" | "mismatch" | "refund_required"
   >;
   processWebhook(
     eventId: string,
     eventType: string,
     payment: ProviderPayment,
   ): Promise<"processed" | "duplicate">;
+  findSuccessfulAttemptByOrder(orderId: string): Promise<PaymentAttemptRecord | null>;
 }
 
 export function createPrismaPaymentRepository(prisma: PrismaClient): PaymentRepository {
@@ -184,7 +187,7 @@ export function createPrismaPaymentRepository(prisma: PrismaClient): PaymentRepo
     attemptId: string,
     payment: ProviderPayment,
   ): Promise<
-    "successful" | "pending" | "already_registered" | "capacity_reached" | "expired" | "mismatch"
+    "successful" | "pending" | "already_registered" | "capacity_reached" | "expired" | "mismatch" | "refund_required"
   > {
     const initialAttempt = await transaction.eventPaymentAttempt.findUnique({
       where: { id: attemptId },
@@ -210,6 +213,23 @@ export function createPrismaPaymentRepository(prisma: PrismaClient): PaymentRepo
       return "mismatch";
     }
     if (attempt.status === EventPaymentStatus.SUCCESSFUL) return "successful";
+    if (attempt.status === EventPaymentStatus.REFUND_REQUIRED) return "refund_required";
+    const event = await transaction.event.findUnique({
+      where: { id: attempt.eventId },
+      select: { status: true, capacity: true },
+    });
+    if (event?.status === EventStatus.CANCELLED) {
+      await transaction.eventPaymentAttempt.update({
+        where: { id: attemptId },
+        data: {
+          status: EventPaymentStatus.REFUND_REQUIRED,
+          razorpayPaymentId: payment.id,
+        },
+      });
+      return "refund_required";
+    }
+    if (!event || event.status !== EventStatus.PUBLISHED) return "mismatch";
+
     if (attempt.expiresAt <= new Date()) {
       await transaction.eventPaymentAttempt.update({
         where: { id: attemptId },
@@ -220,12 +240,6 @@ export function createPrismaPaymentRepository(prisma: PrismaClient): PaymentRepo
       });
       return "expired";
     }
-
-    const event = await transaction.event.findUnique({
-      where: { id: attempt.eventId },
-      select: { status: true, capacity: true },
-    });
-    if (!event || event.status !== EventStatus.PUBLISHED) return "mismatch";
 
     const existingRegistration = await transaction.registration.findUnique({
       where: { userId_eventId: { userId: attempt.userId, eventId: attempt.eventId } },
@@ -296,7 +310,9 @@ export function createPrismaPaymentRepository(prisma: PrismaClient): PaymentRepo
           where: { id: eventId },
           select: { status: true, capacity: true, ticketPricePaise: true },
         });
-        if (!event || event.status !== EventStatus.PUBLISHED) return { status: "not_found" };
+        if (!event) return { status: "not_found" };
+        if (event.status === EventStatus.CANCELLED) return { status: "event_cancelled" };
+        if (event.status !== EventStatus.PUBLISHED) return { status: "not_found" };
         if (event.ticketPricePaise === null) return { status: "free_event" };
 
         const existingRegistration = await transaction.registration.findUnique({
@@ -369,7 +385,7 @@ export function createPrismaPaymentRepository(prisma: PrismaClient): PaymentRepo
       await prisma.eventPaymentAttempt.updateMany({
         where: {
           id: attemptId,
-          status: { not: EventPaymentStatus.SUCCESSFUL },
+          status: { notIn: [EventPaymentStatus.SUCCESSFUL, EventPaymentStatus.REFUND_REQUIRED] },
         },
         data: {
           status: EventPaymentStatus.FAILED,
@@ -414,7 +430,8 @@ export function createPrismaPaymentRepository(prisma: PrismaClient): PaymentRepo
             eventType === "payment.failed" &&
             payment.amountPaise === attempt.amountPaise &&
             payment.currency === attempt.currency &&
-            attempt.status !== EventPaymentStatus.SUCCESSFUL
+            attempt.status !== EventPaymentStatus.SUCCESSFUL &&
+            attempt.status !== EventPaymentStatus.REFUND_REQUIRED
           ) {
             await transaction.eventPaymentAttempt.update({
               where: { id: attempt.id },
@@ -427,6 +444,10 @@ export function createPrismaPaymentRepository(prisma: PrismaClient): PaymentRepo
           return "processed";
         });
     },
+    findSuccessfulAttemptByOrder: (orderId) => prisma.eventPaymentAttempt.findFirst({
+      where: { razorpayOrderId: orderId, status: EventPaymentStatus.SUCCESSFUL, registrationId: { not: null } },
+      select: paymentAttemptSelect,
+    }),
   };
 }
 
@@ -516,15 +537,27 @@ export function createPaymentRouter(
   repository: PaymentRepository,
   gateway: PaymentGateway | null,
   configuration: PaymentConfiguration,
+  notifyRegistration?: RegistrationNotifier,
 ) {
   const router = Router();
+  const deliverConfirmation = async (input: { userId: string; eventId: string; registrationId: string }) => {
+    if (!notifyRegistration) return;
+    try {
+      await notifyRegistration(input);
+    } catch (error) {
+      console.error("Registration notification failed", { errorType: error instanceof Error ? error.name : "UnknownError" });
+    }
+  };
 
   router.post(
     "/webhook",
     express.raw({ type: "application/json", limit: "1mb" }),
     async (request, response) => {
-      if (!configuration.enabled || !configuration.webhookSecret) {
+      if (!configuration.enabled) {
         return response.status(503).json({ error: "Razorpay is not configured for test payments" });
+      }
+      if (!configuration.webhookSecret) {
+        return response.status(503).json({ error: "Razorpay webhook verification is not configured" });
       }
       if (!Buffer.isBuffer(request.body)) {
         return response.status(400).json({ error: "Invalid Razorpay webhook body" });
@@ -558,7 +591,15 @@ export function createPaymentRouter(
       };
 
       try {
-        await repository.processWebhook(id, event, payment);
+        const result = await repository.processWebhook(id, event, payment);
+        if (result === "processed" && event === "payment.captured" && notifyRegistration) {
+          try {
+            const attempt = await repository.findSuccessfulAttemptByOrder(payment.orderId);
+            if (attempt?.registrationId) await deliverConfirmation({ userId: attempt.userId, eventId: attempt.eventId, registrationId: attempt.registrationId });
+          } catch (error) {
+            console.error("Registration notification lookup failed", { errorType: error instanceof Error ? error.name : "UnknownError" });
+          }
+        }
         return response.status(200).json({ received: true });
       } catch (error) {
         logPaymentFailure("webhook processing", error);
@@ -597,6 +638,9 @@ export function createPaymentRouter(
       const reservation = await repository.reserveAttempt(eventId.data, userId, expiresAt, now);
       if (reservation.status === "not_found") {
         return response.status(404).json({ error: "Event not found" });
+      }
+      if (reservation.status === "event_cancelled") {
+        return response.status(409).json({ error: "Event has been cancelled" });
       }
       if (reservation.status === "free_event") {
         return response.status(409).json({ error: "This event does not require payment" });
@@ -651,7 +695,7 @@ export function createPaymentRouter(
     if (!userId) return;
     const parsed = checkoutVerificationSchema.safeParse(request.body);
     if (!parsed.success) return sendValidationError(response, parsed.error);
-    if (!configuration.enabled || !configuration.webhookSecret || !gateway) {
+    if (!configuration.enabled || !gateway) {
       return response.status(503).json({
         error: configuration.message ?? "Razorpay test payments are not configured.",
       });
@@ -661,6 +705,9 @@ export function createPaymentRouter(
       const attempt = await repository.findOwnedAttempt(parsed.data.paymentAttemptId, userId);
       if (!attempt) return response.status(404).json({ error: "Payment attempt not found" });
       if (attempt.status === EventPaymentStatus.SUCCESSFUL) {
+        if (attempt.registrationId) {
+          await deliverConfirmation({ userId, eventId: attempt.eventId, registrationId: attempt.registrationId });
+        }
         return response.json(toPaymentStatus(attempt));
       }
       if (
@@ -700,6 +747,16 @@ export function createPaymentRouter(
 
       const result = await repository.applyCapturedPayment(attempt.id, payment);
       if (result === "successful") {
+        if (notifyRegistration) {
+          try {
+          const confirmedAttempt = await repository.findOwnedAttempt(attempt.id, userId);
+          if (confirmedAttempt?.registrationId) {
+              await deliverConfirmation({ userId, eventId: confirmedAttempt.eventId, registrationId: confirmedAttempt.registrationId });
+          }
+          } catch (error) {
+            console.error("Registration notification lookup failed", { errorType: error instanceof Error ? error.name : "UnknownError" });
+          }
+        }
         return response.json({
           paymentAttemptId: attempt.id,
           status: EventPaymentStatus.SUCCESSFUL,
@@ -715,6 +772,12 @@ export function createPaymentRouter(
       }
       if (result === "expired") {
         return response.status(409).json({ error: "This payment order has expired" });
+      }
+      if (result === "refund_required") {
+        return response.json({
+          paymentAttemptId: attempt.id,
+          status: EventPaymentStatus.REFUND_REQUIRED,
+        });
       }
       if (result === "mismatch") {
         return response.status(400).json({ error: "Payment details do not match this order" });

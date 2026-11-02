@@ -624,6 +624,10 @@
   padding: 36px;
 }
 
+.event-detail-content > .event-cancelled-notice {
+  margin: 0 0 15px;
+}
+
 .event-detail-category {
   color: var(--violet);
   font-size: 10px;
@@ -662,6 +666,10 @@
   font-size: 12px;
   line-height: 1.65;
   overflow-wrap: anywhere;
+}
+
+.event-detail-meta .event-seat-availability {
+  color: var(--violet);
 }
 
 .event-detail-meta strong {

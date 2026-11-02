@@ -119,7 +119,7 @@ function eventToForm(event: ApiEvent) {
     startAt: toLocalDateTime(event.startAt),
     endAt: event.endAt ? toLocalDateTime(event.endAt) : '',
     capacity: event.capacity?.toString() ?? '',
-    status: event.status,
+    status: event.status === 'CANCELLED' ? 'DRAFT' : event.status,
   }
 }
 
@@ -156,6 +156,10 @@ export function OrganizerEventForm() {
         const event = events.find((item) => item.id === eventId)
         if (!event) {
           setError('This event was not found in your organizer account.')
+          return
+        }
+        if (event.status === 'CANCELLED') {
+          setError('Cancelled events cannot be edited.')
           return
         }
         setValues(eventToForm(event))

@@ -1,0 +1,1 @@
+ALTER TYPE "EventPaymentStatus" ADD VALUE 'REFUND_REQUIRED';

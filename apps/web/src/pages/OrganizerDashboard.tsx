@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   ApiError,
   apiRequest,
+  cancelOrganizerEvent,
   deleteOrganizerEvent,
   eventListResponseSchema,
   eventResponseSchema,
@@ -81,6 +82,29 @@ export function OrganizerDashboard() {
     }
   }
 
+  async function cancelEvent(event: ApiEvent) {
+    const confirmed = window.confirm(
+      `Cancel "${event.title}"? Registered students will be notified. CampusConnect does not issue refunds; any paid attendee refunds must be arranged manually.`,
+    )
+    if (!confirmed) return
+
+    setError(null)
+    setNotice(null)
+    try {
+      const response = await cancelOrganizerEvent(event.id)
+      setEvents((currentEvents) => currentEvents.map((current) =>
+        current.id === event.id ? response.event : current,
+      ))
+      setNotice(response.newlyCancelled ? 'Event cancelled. Registered students were notified.' : 'This event is already cancelled.')
+    } catch (requestError) {
+      setError(
+        requestError instanceof ApiError
+          ? requestError.message
+          : 'We could not cancel this event. Please try again.',
+      )
+    }
+  }
+
   return (
     <main className="organizer-page">
       <section className="organizer-content" aria-labelledby="organizer-title">
@@ -114,7 +138,7 @@ export function OrganizerDashboard() {
                   <div className="organizer-event-title">
                     <h2>{event.title}</h2>
                     <span className={`event-status event-status--${event.status.toLowerCase()}`}>
-                      {event.status === 'PUBLISHED' ? 'Published' : 'Draft'}
+                      {event.status === 'PUBLISHED' ? 'Published' : event.status === 'CANCELLED' ? 'Cancelled' : 'Draft'}
                     </span>
                   </div>
                   <p>{event.category} · {event.venue}</p>
@@ -123,23 +147,37 @@ export function OrganizerDashboard() {
                   </time>
                 </div>
                 <div className="organizer-event-actions">
-                  <Link className="button organizer-button" to={`/organizer/events/${encodeURIComponent(event.id)}/edit`}>
-                    Edit
+                  <Link className="button organizer-button" to={`/organizer/events/${encodeURIComponent(event.id)}/attendees`}>
+                    Attendees ({event.registeredCount})
                   </Link>
-                  <button
-                    className="button organizer-button"
-                    type="button"
-                    onClick={() => void togglePublication(event)}
-                  >
-                    {event.status === 'PUBLISHED' ? 'Unpublish' : 'Publish'}
-                  </button>
-                  <button
-                    className="button organizer-button organizer-button--danger"
-                    type="button"
-                    onClick={() => void deleteEvent(event)}
-                  >
-                    Delete
-                  </button>
+                  {event.status !== 'CANCELLED' ? (
+                    <>
+                      <Link className="button organizer-button" to={`/organizer/events/${encodeURIComponent(event.id)}/edit`}>
+                        Edit
+                      </Link>
+                      <button
+                        className="button organizer-button"
+                        type="button"
+                        onClick={() => void togglePublication(event)}
+                      >
+                        {event.status === 'PUBLISHED' ? 'Unpublish' : 'Publish'}
+                      </button>
+                      <button
+                        className="button organizer-button organizer-button--danger"
+                        type="button"
+                        onClick={() => void cancelEvent(event)}
+                      >
+                        Cancel Event
+                      </button>
+                      <button
+                        className="button organizer-button organizer-button--danger"
+                        type="button"
+                        onClick={() => void deleteEvent(event)}
+                      >
+                        Delete
+                      </button>
+                    </>
+                  ) : <span className="organizer-cancelled-hint">Cancellation is final; event records are preserved.</span>}
                 </div>
               </article>
             ))}
