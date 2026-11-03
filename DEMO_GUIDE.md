@@ -1,14 +1,31 @@
 # CampusConnect Demo Guide
 
-This walkthrough is for a local coursework/portfolio presentation. Use an existing local organizer account and a verified student account. Public sign-up creates student accounts only. Keep `.env` and `.demo-credentials.local.json` private and off screen.
+This walkthrough is for a local coursework/portfolio presentation. Use a local organizer account and a verified student account. Public sign-up creates student accounts only; organizer access is provisioned separately as described below. Keep `.env` and `.demo-credentials.local.json` private and off screen. For a new checkout, follow the [setup guide](./docs/SETUP_GUIDE.md) first.
 
 ## Prepare the local app
 
-1. Install dependencies with `npm install`.
+1. Install dependencies with `npm ci` from the repository root.
 2. Configure the repository-root `.env` with the local `DATABASE_URL` and `SESSION_SECRET`. Configure `RAZORPAY_MODE=test`, `RAZORPAY_KEY_ID`, and `RAZORPAY_KEY_SECRET` only if you will demonstrate paid checkout. Never use live Razorpay keys.
-3. Start PostgreSQL and confirm the connected database name before running migrations or any setup that writes data. Do not use a database containing records you need to preserve. The current local database has unapplied migrations; this guide does not apply them.
+3. Start PostgreSQL and confirm the connected database name before running migrations or any setup that writes data. Do not use a database containing records you need to preserve. For database setup and migration steps, see the [setup guide](./docs/SETUP_GUIDE.md).
 4. Start the app with `npm run dev`. Open `http://localhost:5173`; the API uses `http://localhost:3000` by default.
 5. Confirm the API is reachable at `http://localhost:3000/api/health`. Ensure the existing database schema supports the current app before beginning account and event flows.
+
+## Account access
+
+- **Student:** use an existing verified local student account, or register through the public sign-up flow and complete email verification. Public sign-up always assigns the `STUDENT` role.
+- **Organizer:** sign in with an organizer account provisioned for the local database. There is no public organizer sign-up or role selector. For an isolated demo database only, the repository includes a guarded, additive demo seed that upserts a demo organizer, students, events, and registrations. It generates a local-only credential file; no password is committed or documented.
+
+The demo seed is optional and is not needed when suitable accounts and events already exist. To use it, first create and migrate a dedicated local `campusconnect_demo` database using the [setup guide](./docs/SETUP_GUIDE.md), then set the root `.env` `DATABASE_URL` to that database. The seed accepts only local PostgreSQL hosts and the database names `campusconnect_demo` or `campusconnect_test`; it also requires explicit, matching flags. In PowerShell, run:
+
+```powershell
+$env:DEMO_SEED_ENABLED = "true"
+$env:DEMO_SEED_DATABASE_NAME = "campusconnect_demo"
+npm run db:seed:demo -w apps/api
+Remove-Item Env:DEMO_SEED_ENABLED
+Remove-Item Env:DEMO_SEED_DATABASE_NAME
+```
+
+The seed upserts demo-only users and fixtures without deleting records. On first success it writes a randomly generated password to `.demo-credentials.local.json` at the repository root. Read it locally and privately to sign in; never publish or share it. If the database contains data you need to preserve, use an already provisioned organizer account instead of running the seed.
 
 ## Demonstration sequence
 

@@ -11,3 +11,5 @@ apps/api/src/generated/
 *.log
 .DS_Store
 .vscode/
+rzp-key.csv
+Backup_DB.sql

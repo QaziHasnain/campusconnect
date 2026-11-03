@@ -1,332 +1,109 @@
 # CampusConnect
 
-CampusConnect is a campus event discovery and registration application. Students can browse published events and manage their registrations; organizers can create and manage their own events.
+CampusConnect is a campus event discovery and registration application. Students can find published events, register, and manage their registrations; organizers can publish and manage events and review attendees. It is a personal CSE portfolio project intended to be cloned and run locally.
 
-This is a personal software project built to be understandable, testable, and suitable for a public GitHub portfolio.
+## Problem and objectives
 
-## Problem statement
+Campus event details are often spread across disconnected channels, making events harder for students to find and harder for organizers to manage. CampusConnect brings event discovery, registration, and event administration into one application.
 
-Campus event information is often distributed across disconnected channels. Students may miss activities, while organizers have difficulty publishing event details and tracking attendance. CampusConnect brings event discovery, registration, and organizer management together in one web application.
-
-## Objectives
-
-- Provide one place to find published campus events.
-- Let students create accounts, sign in, register for events, and review their registrations.
-- Let organizers create, edit, publish, unpublish, cancel, and delete their events.
-- Enforce authentication, role checks, ownership, validation, and duplicate-registration prevention on the server.
+- Give students one place to browse events and track registrations.
+- Give organizers tools to create and manage events and attendee lists.
+- Enforce authentication, role checks, event ownership, validation, and duplicate-registration rules on the server.
 
 ## Features
 
-- Student registration and login with server-side sessions and email verification before account activation.
-- Published event browsing, category filtering, and event registration.
-- Organizer-created events with draft/published/cancelled states, attendee lists, and remaining-seat availability.
-- Event registration and cancellation notifications in the student's in-app notification centre.
-- Venue addresses and optional interactive Leaflet/OpenStreetMap maps with directions links.
-- Free or paid INR event tickets through Razorpay Standard Checkout in test mode only.
-- Registration list for the signed-in student.
-- Organizer dashboard and create/edit event forms.
-- Organizer-only server routes with per-event ownership checks.
-- Public About, How It Works, and FAQ pages, plus detailed pages for published events.
-- Email verification, resend-verification, forgot/reset password flows, and Argon2 password hashing with expiring single-use tokens.
-- Optional SMTP delivery for verification and password-reset links.
-- Optional, explicitly opt-in WhatsApp reminders for registered events, delivered from approved
-  Meta WhatsApp Business Cloud API templates by a persistent PostgreSQL-backed worker.
-- Native in-app notification history, per-student preferences, and optional browser push through
-  the Web Push API and a persistent PostgreSQL-backed worker.
+**Students**
 
-Dedicated event pages are available at `/events/:eventId`. They show the full description, category,
-event schedule, venue address, optional venue map and directions, ticket price, organizer name,
-maximum capacity, and remaining seats when capacity is limited. Paid registrations are confirmed
-only after Razorpay reports a captured test payment. Organizers can view attendees and cancel an
-event; registrations remain in the database and affected students receive an in-app notification.
-CampusConnect does not process refunds.
+- Create and verify an account, sign in, and recover a password.
+- Browse published events, inspect event details, and register for free events.
+- Use Razorpay Standard Checkout for paid registrations in **Test Mode only**.
+- Review registrations and view registration and event-cancellation notifications in the in-app notification centre.
+- View venue maps and directions when event coordinates are available.
+- Configure optional browser push and WhatsApp reminder preferences.
 
-## Technology stack
+**Organizers**
 
-| Area | Technologies |
+- Create, edit, publish, unpublish, cancel, and delete owned events.
+- Set event category, venue, schedule, ticket price, and optional capacity and coordinates.
+- Review attendees and available capacity from the organizer dashboard.
+- Cancel events while retaining registration records and notifying affected students in-app. CampusConnect does not issue refunds.
+
+## Technology
+
+| Area | Stack |
 |---|---|
 | Frontend | React 19, TypeScript, Vite, React Router, Leaflet, React-Leaflet |
-| API | Node.js, Express 5, TypeScript, Zod, Razorpay Standard Checkout |
-| Database | PostgreSQL, Prisma ORM, `pg` adapter |
+| API | Node.js, Express 5, TypeScript, Zod |
+| Data | PostgreSQL, Prisma ORM, `pg` adapter |
 | Authentication | `express-session`, PostgreSQL session store, Argon2 |
-| Email | Nodemailer with optional SMTP configuration |
-| Tests | Vitest, Supertest, Testing Library |
+| Integrations | Razorpay Standard Checkout, Nodemailer/SMTP, Web Push, optional WhatsApp providers, OpenStreetMap tiles |
+| Quality | Vitest, Supertest, Testing Library, Oxlint |
 
-## Architecture
+## Architecture and request flow
 
 ```mermaid
 flowchart LR
-  Browser[React + Vite browser app] -->|HTTP / JSON, session cookie| API[Express API]
-  API -->|Prisma via pg adapter| DB[(PostgreSQL)]
-  API -->|Server-side orders and payment verification| Razorpay[Razorpay Test Mode]
-  Browser -->|Leaflet tiles with attribution| OSM[OpenStreetMap]
-  API -->|Optional reset email| SMTP[SMTP provider]
-  Worker[Independent reminder worker] -->|Prisma via pg adapter| DB
-  Worker -->|Approved template over HTTPS| WhatsApp[Meta WhatsApp Cloud API]
-  NotificationWorker[Native notification worker] -->|VAPID-authenticated Web Push| BrowserPush[Browser push services]
-  DB --> Users[Users and roles]
-  DB --> Events[Events]
-  DB --> Registrations[Event registrations]
-  DB --> Reminders[Persistent WhatsApp reminders]
-  DB --> Notifications[Notifications and reminder schedules]
-  DB --> PushSubscriptions[Encrypted per-device subscriptions and delivery queue]
-  DB --> Sessions[Sessions and reset tokens]
+  Browser[React + Vite] -->|JSON and session cookie| API[Express API]
+  API -->|Prisma with pg adapter| DB[(PostgreSQL)]
+  API -->|Test checkout and verification| Razorpay[Razorpay Test Mode]
+  Browser -->|Leaflet map tiles| OSM[OpenStreetMap]
+  API -->|Optional email| SMTP[SMTP provider]
+  DB --> Notify[Notification and reminder queues]
+  Notify --> Workers[Optional API workers]
+  Workers --> Push[Browser push services]
+  Workers --> WhatsApp[Optional WhatsApp provider]
 ```
 
-The browser calls the API using `VITE_API_URL` when set; otherwise it uses `http://localhost:3000`. The API defaults to port `3000`, and the frontend development server uses Vite's default port `5173`.
+React pages call the Express API with JSON and a session cookie. Express validates requests, resolves the server-side session, checks roles and event ownership, then uses Prisma and PostgreSQL constraints/transactions to persist changes. Razorpay order creation and payment verification happen on the API; maps load in the browser from the configured tile provider. Email, push, and WhatsApp delivery require optional provider configuration. In-app notification history is stored in PostgreSQL.
 
-The site navigation is shared across routes and includes Home, Discover Events, About, How It Works, and FAQ, with account-specific links shown after sign-in.
+See [architecture documentation](./docs/architecture.md) for component responsibilities, request flow, and database relationships.
+
+Authentication uses PostgreSQL-backed server sessions and Argon2 password hashes. Public registration creates student accounts only. Organizer accounts must be provisioned separately; see [the demo guide](./DEMO_GUIDE.md). The Prisma schema and ordered SQL migrations are under [`apps/api/prisma/`](./apps/api/prisma/).
+
+The database stores users and roles, events, student registrations, payment attempts and webhook IDs, password/email verification tokens, sessions, and notification preferences/history/queues. Unique constraints and transactions protect duplicate registrations and capacity-sensitive operations; paid registrations are fulfilled only after captured Test Mode payment verification.
+
+## Integrations
+
+- **Razorpay:** optional INR paid checkout with server-side order and captured-payment verification. **Test Mode only; live payment processing is disabled.** See [payments setup](./docs/payments-setup.md).
+- **Leaflet and OpenStreetMap:** optional event maps and directions, with attribution. Tile availability depends on internet access and the public tile service.
+- **Email notifications:** optional SMTP delivery for account verification and password reset. See [email setup](./docs/email-setup.md).
+- **In-app notifications:** persistent registration and event-update notifications, with preferences and optional browser push. Push delivery needs a separately started worker. See [notification setup](./docs/notifications-setup.md).
+- **WhatsApp reminders:** optional, explicit opt-in reminders through supported providers and a separately started worker. See [WhatsApp setup](./docs/whatsapp-setup.md).
 
 ## Project structure
 
 ```text
 apps/
   api/
-    prisma/       Prisma schema, migrations, and seed scripts
-    src/          Express routes, auth, database adapters, and API tests
+    prisma/       Schema, ordered migrations, and guarded demo seed
+    src/          Express routes, persistence, workers, and API tests
   web/
-    src/          React routes, components, pages, auth, and styles
+    src/          React pages, components, API client, and styles
 packages/
   shared/         Shared workspace package
+docs/             Architecture and integration/setup guides
 README.md
-docs/architecture.md
-docs/release-readiness.md
-docs/screenshots/
 DEMO_GUIDE.md
 ```
 
-## Database overview
+## Getting started
 
-The Prisma schema is in `apps/api/prisma/schema.prisma`.
+Follow the [local setup guide](./docs/SETUP_GUIDE.md) for software requirements, database setup, environment configuration, migrations, and run commands. For the student and organizer walkthrough, see the [demo guide](./DEMO_GUIDE.md).
 
-- `User`: unique email, Argon2 password hash, role, and optional WhatsApp number/consent timestamps.
-- `Event`: event details, category, draft/published state, optional capacity, venue address and
-  coordinates, nullable integer-paise ticket price, and organizer ownership.
-- `Registration`: joins a student to an event; `(userId, eventId)` is unique. Paid registrations
-  are created only after captured payment verification.
-- `EventPaymentAttempt`: per-student payment order and captured-payment state, linked to any resulting
-  registration.
-- `RazorpayWebhookEvent`: unique provider event IDs for webhook idempotency.
-- `PasswordResetToken`: stores a token hash and expiration, linked to a user.
-- `WhatsAppReminder`: durable per-registration/per-offset schedule, retry state, and provider result.
-- `Notification`: user-scoped in-app notification history and event relationship.
-- `NotificationPreference`: per-student in-app, push, event-reminder, and event-update settings.
-- `PushSubscription`: encrypted subscription data stored separately per browser/device.
-- `NotificationReminder` and `NotificationPushDelivery`: durable, unique reminder schedules and
-  retryable push outbox entries.
-- `Session`: PostgreSQL-backed Express session storage.
+## Common checks
 
-Event categories are `TECHNOLOGY`, `CULTURAL`, `SPORTS`, `WORKSHOPS`, and `HACKATHONS`. Events can be `DRAFT`, `PUBLISHED`, or `CANCELLED`.
-
-## Local setup
-
-### Prerequisites
-
-- Node.js 22.12 or newer.
-- npm.
-- A local PostgreSQL instance and a database created for development.
-
-### Install and configure
-
-```sh
-npm install
-```
-
-On Windows PowerShell, create the local environment file with:
+Run from the repository root:
 
 ```powershell
-Copy-Item .env.example .env
-```
-
-Edit `.env` locally. Set `DATABASE_URL` to your local PostgreSQL database and set a random `SESSION_SECRET` of at least 32 characters. The API reads this file from the repository root. Do not commit `.env` or paste its contents into logs or issue reports. Only the two variables marked required below are necessary for a basic local start; all optional integrations can remain disabled.
-
-| Variable | Required | Purpose |
-|---|---:|---|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `SESSION_SECRET` | Yes | Secret used to sign session cookies (at least 32 characters) |
-| `NODE_ENV` | No | `development`, `test`, or `production`; defaults to `development` |
-| `PORT` | No | API listen port; defaults to `3000` |
-| `FRONTEND_ORIGIN` | No | Exact browser origin allowed by credentialed CORS; defaults to `http://localhost:5173` |
-| `RAZORPAY_MODE` | No | `test` by default; live mode is disabled |
-| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | For paid checkout | Optional Razorpay Test Mode credentials; secrets stay on the API. See [payments setup](./docs/payments-setup.md) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | No | Configure all together to enable verification and reset email |
-| `WHATSAPP_ENABLED` | No | `false` by default; enable reminders only after provider setup and approval |
-| `WHATSAPP_PROVIDER` | No | `meta` by default; choose `meta` or `twilio` |
-| WhatsApp provider credentials and template settings | When enabled | Configure only the selected Meta or Twilio provider; see [WhatsApp setup](./docs/whatsapp-setup.md) |
-| `WHATSAPP_REMINDER_OFFSETS_HOURS` | No | Two distinct positive offsets; defaults to `24,1` |
-| `PUSH_VAPID_PUBLIC_KEY`, `PUSH_VAPID_PRIVATE_KEY`, `PUSH_VAPID_SUBJECT` | No | Configure together to enable browser push; see [native notification setup](./docs/notifications-setup.md) |
-| `PUSH_SUBSCRIPTION_ENCRYPTION_KEY` | With VAPID | Base64-encoded random 32-byte key used to encrypt browser subscriptions at rest |
-| `VITE_API_URL` | No | API base URL when it is not the local default |
-| `VITE_MAP_TILE_URL`, `VITE_MAP_ATTRIBUTION` | No | Optional public map-provider tile and attribution settings; see [maps setup](./docs/maps-setup.md) |
-
-Use the exact frontend origin in `FRONTEND_ORIGIN`; credentialed browser requests require a matching origin. Keep secrets in local environment configuration or the hosting provider's secret manager.
-
-When SMTP is configured, both the verification email and the forgotten-password email use the same provider. In local development, the API may fall back to a localhost-safe log-only flow when `NODE_ENV` is `development` or `test` and `FRONTEND_ORIGIN` is `localhost`/`127.0.0.1`. This is for local testing only and does not send real email.
-
-For frontend development, no extra environment file is required for the default local API URL or
-OpenStreetMap provider. Set `VITE_API_URL` only when the API is hosted at a different local URL.
-
-See [docs/email-setup.md](./docs/email-setup.md) for the complete SMTP and email-verification setup guide.
-
-### Migrate and run
-
-Database migrations change the schema. Check the connected database and migration status before
-choosing to apply them. The current codebase includes migrations for event cancellation and paid
-registration handling after cancellation; applied status depends on the selected database. Do not
-run a migration against a database whose contents you need to preserve. Migration execution is a
-deliberate, separate action.
-
-```sh
-# Read-only status check
-cd apps/api
-npx prisma migrate status
-
-# Apply committed migrations to the explicitly selected local development database
-npm run db:migrate:dev -w apps/api
-```
-
-For an already prepared local database, `npm run db:migrate -w apps/api` applies committed
-migrations. Confirm the database identity on the same connection first. Never apply migrations to a
-shared or production database. PostgreSQL integration tests are guarded separately and must use the
-dedicated local `campusconnect_test` database.
-
-```sh
-npm run db:migrate -w apps/api
-```
-
-Start the frontend and API together:
-
-```sh
-npm run dev
-```
-
-Or start either workspace independently:
-
-```sh
-npm run dev -w apps/web
-npm run dev -w apps/api
-```
-
-The native event reminder worker runs independently of the API and WhatsApp integration. It uses
-the database-backed reminder queue even when browser push is not configured; in-app notifications
-continue to work. Start it separately:
-
-```sh
-npm run worker:notifications -w apps/api
-```
-
-The existing WhatsApp worker remains separate, optional, and disabled by default:
-
-```sh
-npm run worker -w apps/api
-```
-
-For VAPID key generation, secure subscription storage, local HTTPS, browser permission, and worker
-operation, see [docs/notifications-setup.md](./docs/notifications-setup.md). The browser asks for
-permission only after a student chooses **Enable** in notification preferences.
-
-For Meta setup, template approval, worker operation, and safe testing, see
-[docs/whatsapp-setup.md](./docs/whatsapp-setup.md).
-
-For the OpenStreetMap tile configuration and usage limitations, see
-[docs/maps-setup.md](./docs/maps-setup.md). For Razorpay test credentials, webhook setup, and safe
-checkout testing, see [docs/payments-setup.md](./docs/payments-setup.md).
-
-The API reads the monorepo-root `.env`. The web app is available at `http://localhost:5173`, and the API defaults to `http://localhost:3000`.
-
-## Demo data and accounts
-
-The demo seed is additive/upsert-based, uses stable demo-only event IDs and `.test` account emails, and never deletes records. It provisions the organizer through a trusted Prisma seed; public registration continues to create student accounts only.
-
-**Do not run this against a development or production database.** Create a dedicated local database named `campusconnect_demo` (or `campusconnect_test`), set the root `.env` `DATABASE_URL` to that local database, and confirm the database has no important data. The seed refuses remote hosts, unapproved names, missing flags, mismatched acknowledgements, and `NODE_ENV=production`.
-
-In PowerShell, enable the operation only for the run:
-
-```powershell
-$env:DEMO_SEED_ENABLED = "true"
-$env:DEMO_SEED_DATABASE_NAME = "campusconnect_demo"
-npm run db:seed:demo -w apps/api
-Remove-Item Env:DEMO_SEED_ENABLED
-Remove-Item Env:DEMO_SEED_DATABASE_NAME
-```
-
-The first successful run creates `.demo-credentials.local.json` at the repository root with a randomly generated password for the demo organizer and student accounts. This file is git-ignored; keep it local and do not share or commit it. The seed reuses the saved password on later runs so the local demo accounts remain usable. It upserts the known demo users, six stable-ID events, and demo registrations; running it again updates those fixtures. It does not reset or delete records. Use it only on a dedicated local demo database and do not rerun it during workflow verification.
-
-Demo account emails:
-
-- Organizer: `demo.organizer@campusconnect.test`
-- Student: `demo.student.one@campusconnect.test`
-- Student: `demo.student.two@campusconnect.test`
-
-Read the local credential file privately to sign in. No demo passwords are committed in this repository.
-
-## Email configuration
-
-Password reset can send an email when all of the following are configured in `.env`: `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`. These settings are optional as a group. Never commit SMTP credentials.
-
-Without SMTP, development can log a reset URL only when `NODE_ENV=development` and `FRONTEND_ORIGIN` is a localhost origin. Production requires configured email delivery and does not expose a reset link in logs.
-
-## Testing and quality checks
-
-```sh
-npm run build
-npm run lint -w apps/web
-npm test -w apps/web
 npm test
+npm test -w apps/web
+npm test -w apps/api
+npm run lint -w apps/web
+npm run build
 ```
 
-The API tests run serially (`--maxWorkers=1`). PostgreSQL integration suites are opt-in with `RUN_DB_INTEGRATION_TESTS=true` and enforce the dedicated local database name; they are skipped by the default test command. Browser and responsive checks are manual; an automated end-to-end browser suite is not configured. Run the frontend tests with `npm test -w apps/web`, the backend tests with `npm test -w apps/api`, production builds with `npm run build`, and frontend lint with `npm run lint -w apps/web`.
+PostgreSQL integration suites are opt-in and require a dedicated local `campusconnect_test` database. The default tests do not run database migrations or seed data. Browser end-to-end and responsive checks are manual.
 
-## Screenshots and demo walkthrough
+## Scope and limitations
 
-The following screenshots are captured from the running local application and use seeded event data. No credentials, cookies, or reset tokens are included.
-
-| Screen | Screenshot |
-|---|---|
-| Homepage | ![CampusConnect homepage](./docs/screenshots/homepage.png) |
-| About | ![About CampusConnect](./docs/screenshots/about.png) |
-| How It Works | ![How it works](./docs/screenshots/how-it-works.png) |
-| FAQ | ![Frequently asked questions](./docs/screenshots/faq.png) |
-| Event listing | ![Campus event listing](./docs/screenshots/event-listing.png) |
-| Event details | ![Campus event details](./docs/screenshots/event-details.png) |
-| Login | ![Login](./docs/screenshots/login.png) |
-| Registration | ![Registration](./docs/screenshots/registration.png) |
-| My Registrations | ![My registrations](./docs/screenshots/my-registrations.png) |
-| Organizer dashboard | ![Organizer dashboard](./docs/screenshots/organizer-dashboard.png) |
-| Create event | ![Create event form](./docs/screenshots/event-create.png) |
-| Edit event | ![Edit event form](./docs/screenshots/event-edit.png) |
-| Forgot Password | ![Forgot password](./docs/screenshots/forgot-password.png) |
-| Reset Password | ![Reset password](./docs/screenshots/reset-password.png) |
-| Mobile homepage | ![Responsive mobile homepage](./docs/screenshots/homepage-mobile.png) |
-
-See [DEMO_GUIDE.md](./DEMO_GUIDE.md) for local workflow notes.
-
-## Security
-
-- Argon2 hashes account passwords; public registration assigns the `STUDENT` role.
-- Server-side PostgreSQL sessions use `httpOnly` cookies and production-only `secure` cookies.
-- Organizer operations check both the organizer role and event ownership on the server.
-- Zod validates API input; database uniqueness and transactions protect registration workflows.
-- Paid tickets use server-calculated paise amounts, Razorpay order IDs stored in the database,
-  constant-time HMAC verification, provider-side captured-status checks, signed raw-body webhooks,
-  and transaction-locked capacity reservations. Razorpay remains test-only.
-- Public maps use OpenStreetMap attribution and its best-effort public tiles; no map marker is shown
-  for events without coordinates.
-- Password-reset tokens are random, stored as SHA-256 hashes, rate-limited, expire using PostgreSQL time, and are consumed atomically with the password update and existing-session invalidation.
-- Password-reset responses do not reveal whether an email address is registered.
-- Helmet supplies common HTTP security headers, and credentialed CORS is restricted to the configured frontend origin.
-
-See [docs/release-readiness.md](./docs/release-readiness.md) for additional implementation notes.
-
-## Known limitations
-
-- CampusConnect is a local college and portfolio project; deployment and multi-instance operation are outside its current scope.
-- Paid checkout requires optional Razorpay Test Mode credentials. Live payments are disabled, and the application does not issue refunds; organizers must arrange any refund manually.
-- Email delivery requires optional SMTP configuration. Without it, verification and reset links use the documented local development flow.
-- Browser push, WhatsApp reminders, and map tiles depend on optional configuration or external services. Maps require internet access for tile loading.
-- PostgreSQL integration suites require a dedicated local test database and are excluded from the default test run. Browser end-to-end and responsive checks are manual.
-- Notification delivery workers must be started separately when testing queued browser push or WhatsApp reminders.
-
-## Architecture documentation
-
-See [docs/architecture.md](./docs/architecture.md) for component responsibilities, request flows, and database relationships.
+CampusConnect is scoped to local portfolio/coursework use; deployment and multi-instance operation are outside the current project scope. Razorpay remains in Test Mode and the application does not issue refunds. SMTP, browser push, WhatsApp reminders, and map tiles require optional configuration or external services. PostgreSQL integration tests require a dedicated local test database, and notification workers run separately when testing queued delivery. See [release readiness](./docs/release-readiness.md) for known operational issues and deployment notes.
